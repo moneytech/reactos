@@ -20,19 +20,22 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #define COBJMACROS
 
 #include "windef.h"
 #include "winbase.h"
 #include "winuser.h"
+#ifdef __REACTOS__
+#include "winnls.h"
+#endif
 #include "ole2.h"
 #include "dispex.h"
 #include "activscp.h"
 
 #include "resource.h"
 
-#include "wine/unicode.h"
 #include "wine/heap.h"
 #include "wine/list.h"
 
@@ -52,6 +55,7 @@ typedef struct _jsval_t jsval_t;
 typedef struct _jsstr_t jsstr_t;
 typedef struct _script_ctx_t script_ctx_t;
 typedef struct _dispex_prop_t dispex_prop_t;
+typedef struct _property_desc_t property_desc_t;
 
 typedef struct {
     void **blocks;
@@ -76,7 +80,7 @@ static inline LPWSTR heap_strdupW(LPCWSTR str)
     if(str) {
         DWORD size;
 
-        size = (strlenW(str)+1)*sizeof(WCHAR);
+        size = (lstrlenW(str)+1)*sizeof(WCHAR);
         ret = heap_alloc(size);
         if(ret)
             memcpy(ret, str, size);
@@ -89,12 +93,14 @@ typedef struct jsdisp_t jsdisp_t;
 
 extern HINSTANCE jscript_hinstance DECLSPEC_HIDDEN;
 
-#define PROPF_ARGMASK     0x00ff
-#define PROPF_METHOD      0x0100
-#define PROPF_ENUM        0x0200
-#define PROPF_CONSTR      0x0400
-#define PROPF_CONST       0x0800
-#define PROPF_DONTDELETE  0x1000
+#define PROPF_ARGMASK       0x00ff
+#define PROPF_METHOD        0x0100
+#define PROPF_CONSTR        0x0200
+
+#define PROPF_ENUMERABLE    0x0400
+#define PROPF_WRITABLE      0x0800
+#define PROPF_CONFIGURABLE  0x1000
+#define PROPF_ALL           (PROPF_ENUMERABLE | PROPF_WRITABLE | PROPF_CONFIGURABLE)
 
 #define PROPF_VERSION_MASK  0x01ff0000
 #define PROPF_VERSION_SHIFT 16
@@ -115,6 +121,7 @@ typedef enum {
     JSCLASS_ARRAY,
     JSCLASS_BOOLEAN,
     JSCLASS_DATE,
+    JSCLASS_ENUMERATOR,
     JSCLASS_ERROR,
     JSCLASS_FUNCTION,
     JSCLASS_GLOBAL,
@@ -285,8 +292,6 @@ HRESULT disp_propput(script_ctx_t*,IDispatch*,DISPID,jsval_t) DECLSPEC_HIDDEN;
 HRESULT jsdisp_propget(jsdisp_t*,DISPID,jsval_t*) DECLSPEC_HIDDEN;
 HRESULT jsdisp_propput(jsdisp_t*,const WCHAR*,DWORD,jsval_t) DECLSPEC_HIDDEN;
 HRESULT jsdisp_propput_name(jsdisp_t*,const WCHAR*,jsval_t) DECLSPEC_HIDDEN;
-HRESULT jsdisp_propput_const(jsdisp_t*,const WCHAR*,jsval_t) DECLSPEC_HIDDEN;
-HRESULT jsdisp_propput_dontenum(jsdisp_t*,const WCHAR*,jsval_t) DECLSPEC_HIDDEN;
 HRESULT jsdisp_propput_idx(jsdisp_t*,DWORD,jsval_t) DECLSPEC_HIDDEN;
 HRESULT jsdisp_propget_name(jsdisp_t*,LPCWSTR,jsval_t*) DECLSPEC_HIDDEN;
 HRESULT jsdisp_get_idx(jsdisp_t*,DWORD,jsval_t*) DECLSPEC_HIDDEN;
@@ -294,8 +299,10 @@ HRESULT jsdisp_get_id(jsdisp_t*,const WCHAR*,DWORD,DISPID*) DECLSPEC_HIDDEN;
 HRESULT disp_delete(IDispatch*,DISPID,BOOL*) DECLSPEC_HIDDEN;
 HRESULT disp_delete_name(script_ctx_t*,IDispatch*,jsstr_t*,BOOL*) DECLSPEC_HIDDEN;
 HRESULT jsdisp_delete_idx(jsdisp_t*,DWORD) DECLSPEC_HIDDEN;
-HRESULT jsdisp_is_own_prop(jsdisp_t*,const WCHAR*,BOOL*) DECLSPEC_HIDDEN;
-HRESULT jsdisp_is_enumerable(jsdisp_t*,const WCHAR*,BOOL*) DECLSPEC_HIDDEN;
+HRESULT jsdisp_get_own_property(jsdisp_t*,const WCHAR*,BOOL,property_desc_t*) DECLSPEC_HIDDEN;
+HRESULT jsdisp_define_property(jsdisp_t*,const WCHAR*,property_desc_t*) DECLSPEC_HIDDEN;
+HRESULT jsdisp_define_data_property(jsdisp_t*,const WCHAR*,unsigned,jsval_t) DECLSPEC_HIDDEN;
+HRESULT jsdisp_next_prop(jsdisp_t*,DISPID,BOOL,DISPID*) DECLSPEC_HIDDEN;
 
 HRESULT create_builtin_function(script_ctx_t*,builtin_invoke_t,const WCHAR*,const builtin_info_t*,DWORD,
         jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
@@ -378,6 +385,17 @@ typedef struct {
 
 #include "jsval.h"
 
+struct _property_desc_t {
+    unsigned flags;
+    unsigned mask;
+    BOOL explicit_value;
+    jsval_t value;
+    BOOL explicit_getter;
+    jsdisp_t *getter;
+    BOOL explicit_setter;
+    jsdisp_t *setter;
+};
+
 typedef struct {
     EXCEPINFO ei;
     jsval_t val;
@@ -413,6 +431,7 @@ struct _script_ctx_t {
     jsval_t *stack;
     unsigned stack_size;
     unsigned stack_top;
+    jsval_t acc;
 
     jsstr_t *last_match;
     match_result_t match_parens[9];
@@ -424,6 +443,7 @@ struct _script_ctx_t {
     jsdisp_t *array_constr;
     jsdisp_t *bool_constr;
     jsdisp_t *date_constr;
+    jsdisp_t *enumerator_constr;
     jsdisp_t *error_constr;
     jsdisp_t *eval_error_constr;
     jsdisp_t *range_error_constr;
@@ -456,6 +476,7 @@ HRESULT create_array_constr(script_ctx_t*,jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
 HRESULT create_bool_constr(script_ctx_t*,jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
 HRESULT create_date_constr(script_ctx_t*,jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
 HRESULT init_error_constr(script_ctx_t*,jsdisp_t*) DECLSPEC_HIDDEN;
+HRESULT create_enumerator_constr(script_ctx_t*,jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
 HRESULT create_number_constr(script_ctx_t*,jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
 HRESULT create_object_constr(script_ctx_t*,jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
 HRESULT create_regexp_constr(script_ctx_t*,jsdisp_t*,jsdisp_t**) DECLSPEC_HIDDEN;
@@ -489,14 +510,6 @@ static inline BOOL is_vclass(vdisp_t *vdisp, jsclass_t class)
 {
     return is_jsdisp(vdisp) && is_class(vdisp->u.jsdisp, class);
 }
-
-#ifndef INT32_MIN
-#define INT32_MIN (-2147483647-1)
-#endif
-
-#ifndef INT32_MAX
-#define INT32_MAX (2147483647)
-#endif
 
 static inline BOOL is_int32(double d)
 {
@@ -546,6 +559,7 @@ static inline DWORD make_grfdex(script_ctx_t *ctx, DWORD flags)
 #define JS_E_VBARRAY_EXPECTED        MAKE_JSERROR(IDS_NOT_VBARRAY)
 #define JS_E_INVALID_DELETE          MAKE_JSERROR(IDS_INVALID_DELETE)
 #define JS_E_JSCRIPT_EXPECTED        MAKE_JSERROR(IDS_JSCRIPT_EXPECTED)
+#define JS_E_ENUMERATOR_EXPECTED     MAKE_JSERROR(IDS_NOT_ENUMERATOR)
 #define JS_E_REGEXP_SYNTAX           MAKE_JSERROR(IDS_REGEXP_SYNTAX_ERROR)
 #define JS_E_INVALID_URI_CODING      MAKE_JSERROR(IDS_URI_INVALID_CODING)
 #define JS_E_INVALID_URI_CHAR        MAKE_JSERROR(IDS_URI_INVALID_CHAR)
@@ -553,6 +567,10 @@ static inline DWORD make_grfdex(script_ctx_t *ctx, DWORD flags)
 #define JS_E_PRECISION_OUT_OF_RANGE  MAKE_JSERROR(IDS_PRECISION_OUT_OF_RANGE)
 #define JS_E_INVALID_LENGTH          MAKE_JSERROR(IDS_INVALID_LENGTH)
 #define JS_E_ARRAY_EXPECTED          MAKE_JSERROR(IDS_ARRAY_EXPECTED)
+#define JS_E_NONCONFIGURABLE_REDEFINED MAKE_JSERROR(IDS_NONCONFIGURABLE_REDEFINED)
+#define JS_E_NONWRITABLE_MODIFIED    MAKE_JSERROR(IDS_NONWRITABLE_MODIFIED)
+#define JS_E_PROP_DESC_MISMATCH      MAKE_JSERROR(IDS_PROP_DESC_MISMATCH)
+#define JS_E_INVALID_WRITABLE_PROP_DESC MAKE_JSERROR(IDS_INVALID_WRITABLE_PROP_DESC)
 
 static inline BOOL is_jscript_error(HRESULT hres)
 {

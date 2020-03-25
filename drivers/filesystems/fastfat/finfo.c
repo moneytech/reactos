@@ -265,7 +265,7 @@ VfatSetBasicInformation(
         }
     }
 
-    VfatUpdateEntry(FCB, vfatVolumeIsFatX(DeviceExt));
+    VfatUpdateEntry(DeviceExt, FCB);
 
     if (NotifyFilter != 0)
     {
@@ -713,7 +713,7 @@ VfatSetRenameInformation(
             NewName.MaximumLength += sizeof(WCHAR) + ((PVFATFCB)TargetFileObject->FsContext)->PathNameU.Length;
         }
 
-        NewName.Buffer = ExAllocatePoolWithTag(NonPagedPool, NewName.MaximumLength, TAG_VFAT);
+        NewName.Buffer = ExAllocatePoolWithTag(NonPagedPool, NewName.MaximumLength, TAG_NAME);
         if (NewName.Buffer == NULL)
         {
             if (TargetFileObject != NULL)
@@ -779,7 +779,7 @@ VfatSetRenameInformation(
 
         NewName.Length = 0;
         NewName.MaximumLength = TargetFileObject->FileName.Length + ((PVFATFCB)TargetFileObject->FsContext)->PathNameU.Length + sizeof(WCHAR);
-        NewName.Buffer = ExAllocatePoolWithTag(NonPagedPool, NewName.MaximumLength, TAG_VFAT);
+        NewName.Buffer = ExAllocatePoolWithTag(NonPagedPool, NewName.MaximumLength, TAG_NAME);
         if (NewName.Buffer == NULL)
         {
             Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -787,8 +787,12 @@ VfatSetRenameInformation(
         }
 
         RtlCopyUnicodeString(&NewName, &((PVFATFCB)TargetFileObject->FsContext)->PathNameU);
-        NewName.Buffer[NewName.Length / sizeof(WCHAR)] = L'\\';
-        NewName.Length += sizeof(WCHAR);
+        /* If \, it's already backslash terminated, don't add it */
+        if (!vfatFCBIsRoot(TargetFileObject->FsContext))
+        {
+            NewName.Buffer[NewName.Length / sizeof(WCHAR)] = L'\\';
+            NewName.Length += sizeof(WCHAR);
+        }
         RtlAppendUnicodeStringToString(&NewName, &TargetFileObject->FileName);
     }
 
@@ -945,7 +949,7 @@ VfatSetRenameInformation(
     ASSERT(NewReferences == ParentFCB->RefCount - 1); // new file
 Cleanup:
     if (ParentFCB != NULL) vfatReleaseFCB(DeviceExt, ParentFCB);
-    if (NewName.Buffer != NULL) ExFreePoolWithTag(NewName.Buffer, TAG_VFAT);
+    if (NewName.Buffer != NULL) ExFreePoolWithTag(NewName.Buffer, TAG_NAME);
     if (RenameInfo->RootDirectory != NULL) ObDereferenceObject(RootFileObject);
 
     return Status;
@@ -1397,6 +1401,11 @@ VfatSetAllocationSizeInformation(
             WriteCluster(DeviceExt, Cluster, 0);
             Cluster = NCluster;
         }
+
+        if (DeviceExt->FatInfo.FatType == FAT32)
+        {
+            FAT32UpdateFreeClustersCount(DeviceExt);
+        }
     }
     else
     {
@@ -1407,7 +1416,7 @@ VfatSetAllocationSizeInformation(
     Fcb->Flags |= FCB_IS_DIRTY;
     if (AllocSizeChanged)
     {
-        VfatUpdateEntry(Fcb, vfatVolumeIsFatX(DeviceExt));
+        VfatUpdateEntry(DeviceExt, Fcb);
 
         vfatReportChange(DeviceExt, Fcb, FILE_NOTIFY_CHANGE_SIZE, FILE_ACTION_MODIFIED);
     }
@@ -1552,6 +1561,7 @@ VfatSetInformation(
     PVFATFCB FCB;
     NTSTATUS Status = STATUS_SUCCESS;
     PVOID SystemBuffer;
+    BOOLEAN LockDir;
 
     /* PRECONDITION */
     ASSERT(IrpContext);
@@ -1593,7 +1603,14 @@ VfatSetInformation(
         DPRINT("Can set file size\n");
     }
 
-    if (FileInformationClass == FileRenameInformation)
+    LockDir = FALSE;
+    if (FileInformationClass == FileRenameInformation || FileInformationClass == FileAllocationInformation ||
+        FileInformationClass == FileEndOfFileInformation || FileInformationClass == FileBasicInformation)
+    {
+        LockDir = TRUE;
+    }
+
+    if (LockDir)
     {
         if (!ExAcquireResourceExclusiveLite(&((PDEVICE_EXTENSION)IrpContext->DeviceObject->DeviceExtension)->DirResource,
                                             BooleanFlagOn(IrpContext->Flags, IRPCONTEXT_CANWAIT)))
@@ -1607,7 +1624,7 @@ VfatSetInformation(
         if (!ExAcquireResourceExclusiveLite(&FCB->MainResource,
                                             BooleanFlagOn(IrpContext->Flags, IRPCONTEXT_CANWAIT)))
         {
-            if (FileInformationClass == FileRenameInformation)
+            if (LockDir)
             {
                 ExReleaseResourceLite(&((PDEVICE_EXTENSION)IrpContext->DeviceObject->DeviceExtension)->DirResource);
             }
@@ -1662,7 +1679,7 @@ VfatSetInformation(
         ExReleaseResourceLite(&FCB->MainResource);
     }
 
-    if (FileInformationClass == FileRenameInformation)
+    if (LockDir)
     {
         ExReleaseResourceLite(&((PDEVICE_EXTENSION)IrpContext->DeviceObject->DeviceExtension)->DirResource);
     }

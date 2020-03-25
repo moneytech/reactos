@@ -641,8 +641,10 @@ UserpFormatMessages(
     CaptionStringU->Length = (USHORT)(wcslen(CaptionStringU->Buffer) * sizeof(WCHAR));
 
     /* Free the strings if needed */
-    if (WindowTitleU.Buffer) RtlFreeUnicodeString(&WindowTitleU);
-    if (hProcess) RtlFreeUnicodeString(&FileNameU);
+    if (WindowTitleU.Buffer && (WindowTitleU.MaximumLength != 0))
+        RtlFreeUnicodeString(&WindowTitleU);
+    if (hProcess)
+        RtlFreeUnicodeString(&FileNameU);
 
     Format2A.Buffer = NULL;
 
@@ -1087,6 +1089,7 @@ UserServerHardError(
     UNICODE_STRING TextU, CaptionU;
     WCHAR LocalTextBuffer[256];
     WCHAR LocalCaptionBuffer[256];
+    NTSTATUS Status;
 
     ASSERT(ThreadData->Process != NULL);
 
@@ -1114,6 +1117,16 @@ UserServerHardError(
             return; // STATUS_INVALID_PARAMETER;
         }
         // (Message->UnicodeStringParameterMask & 0x3)
+    }
+
+    Status = NtUserSetInformationThread(NtCurrentThread(),
+                                        UserThreadUseActiveDesktop,
+                                        NULL,
+                                        0);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("Failed to set thread desktop!\n");
+        return;
     }
 
     /* Re-initialize the hard errors cache */
@@ -1166,6 +1179,8 @@ Quit:
         RtlFreeUnicodeString(&TextU);
     if (CaptionU.Buffer != LocalCaptionBuffer)
         RtlFreeUnicodeString(&CaptionU);
+
+    NtUserSetInformationThread(NtCurrentThread(), UserThreadRestoreDesktop, NULL, 0);
 
     return;
 }

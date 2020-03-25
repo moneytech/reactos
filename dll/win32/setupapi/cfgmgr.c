@@ -23,8 +23,16 @@
 
 #include <dbt.h>
 #include <pnp_c.h>
+#include <winsvc.h>
 
 #include "rpc_private.h"
+
+DWORD
+WINAPI
+I_ScPnPGetServiceName(IN SERVICE_STATUS_HANDLE hServiceStatus,
+                      OUT LPWSTR lpServiceName,
+                      IN DWORD cchServiceName);
+
 
 /* Registry key and value names */
 static const WCHAR Backslash[] = {'\\', 0};
@@ -72,6 +80,7 @@ typedef struct _NOTIFY_DATA
 typedef struct _INTERNAL_RANGE
 {
     LIST_ENTRY ListEntry;
+    struct _INTERNAL_RANGE_LIST *pRangeList;
     DWORDLONG ullStart;
     DWORDLONG ullEnd;
 } INTERNAL_RANGE, *PINTERNAL_RANGE;
@@ -85,6 +94,16 @@ typedef struct _INTERNAL_RANGE_LIST
 
 #define RANGE_LIST_MAGIC 0x33445566
 
+typedef struct _CONFLICT_DATA
+{
+    ULONG ulMagic;
+    PPNP_CONFLICT_LIST pConflictList;
+} CONFLICT_DATA, *PCONFLICT_DATA;
+
+#define CONFLICT_MAGIC 0x11225588
+
+
+/* FUNCTIONS ****************************************************************/
 
 static
 BOOL
@@ -226,6 +245,88 @@ GetDeviceInstanceKeyPath(
     {
         /* Software Key Path */
 
+        ulTransferLength = 300 * sizeof(WCHAR);
+        ulLength = 300 * sizeof(WCHAR);
+
+        RpcTryExcept
+        {
+            ret = PNP_GetDeviceRegProp(BindingHandle,
+                                       pszDeviceInst,
+                                       CM_DRP_DRIVER,
+                                       &ulType,
+                                       (PVOID)pszBuffer,
+                                       &ulTransferLength,
+                                       &ulLength,
+                                       0);
+        }
+        RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+        {
+            ret = RpcStatusToCmStatus(RpcExceptionCode());
+        }
+        RpcEndExcept;
+
+        if (ret != CR_SUCCESS)
+        {
+            RpcTryExcept
+            {
+                ret = PNP_GetClassInstance(BindingHandle,
+                                           pszDeviceInst,
+                                           (PVOID)pszBuffer,
+                                           300);
+            }
+            RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+            {
+                ret = RpcStatusToCmStatus(RpcExceptionCode());
+            }
+            RpcEndExcept;
+
+            if (ret != CR_SUCCESS)
+            {
+                goto done;
+            }
+        }
+
+        TRACE("szBuffer: %S\n", pszBuffer);
+
+        SplitDeviceInstanceId(pszBuffer,
+                              pszBuffer,
+                              pszInstancePath);
+
+        TRACE("szBuffer: %S\n", pszBuffer);
+
+        if (ulFlags & CM_REGISTRY_CONFIG)
+        {
+            if (ulHardwareProfile == 0)
+            {
+                wsprintfW(pszKeyPath,
+                          L"%s\\%s\\%s\\%s",
+                          L"System\\CurrentControlSet\\Hardware Profiles",
+                          L"Current",
+                          L"System\\CurrentControlSet\\Control\\Class",
+                          pszBuffer);
+            }
+            else
+            {
+                wsprintfW(pszKeyPath,
+                          L"%s\\%04lu\\%s\\%s",
+                          L"System\\CurrentControlSet\\Hardware Profiles",
+                          ulHardwareProfile,
+                          L"System\\CurrentControlSet\\Control\\Class",
+                          pszBuffer);
+            }
+        }
+        else
+        {
+            wsprintfW(pszKeyPath,
+                      L"%s\\%s",
+                      L"System\\CurrentControlSet\\Control\\Class",
+                      pszBuffer);
+        }
+    }
+    else
+    {
+        /* Hardware Key Path */
+
         if (ulFlags & CM_REGISTRY_CONFIG)
         {
             SplitDeviceInstanceId(pszDeviceInst,
@@ -270,63 +371,6 @@ GetDeviceInstanceKeyPath(
             wsprintfW(pszKeyPath,
                       L"%s\\%s",
                       L"System\\CurrentControlSet\\Enum",
-                      pszBuffer);
-        }
-    }
-    else
-    {
-        /* Hardware Key Path */
-
-        ulTransferLength = 300 * sizeof(WCHAR);
-        ulLength = 300 * sizeof(WCHAR);
-        ret = PNP_GetDeviceRegProp(BindingHandle,
-                                   pszDeviceInst,
-                                   CM_DRP_DRIVER,
-                                   &ulType,
-                                   (PVOID)pszBuffer,
-                                   &ulTransferLength,
-                                   &ulLength,
-                                   0);
-        if (ret != CR_SUCCESS)
-        {
-            ERR("PNP_GetDeviceRegProp() failed (Error %lu)\n", ret);
-            goto done;
-        }
-
-        TRACE("szBuffer: %S\n", pszBuffer);
-
-        SplitDeviceInstanceId(pszBuffer,
-                              pszBuffer,
-                              pszInstancePath);
-
-        TRACE("szBuffer: %S\n", pszBuffer);
-
-        if (ulFlags & CM_REGISTRY_CONFIG)
-        {
-            if (ulHardwareProfile == 0)
-            {
-                wsprintfW(pszKeyPath,
-                          L"%s\\%s\\%s\\%s",
-                          L"System\\CurrentControlSet\\Hardware Profiles",
-                          L"Current",
-                          L"System\\CurrentControlSet\\Control\\Class",
-                          pszBuffer);
-            }
-            else
-            {
-                wsprintfW(pszKeyPath,
-                          L"%s\\%04lu\\%s\\%s",
-                          L"System\\CurrentControlSet\\Hardware Profiles",
-                          ulHardwareProfile,
-                          L"System\\CurrentControlSet\\Control\\Class",
-                          pszBuffer);
-            }
-        }
-        else
-        {
-            wsprintfW(pszKeyPath,
-                      L"%s\\%s",
-                      L"System\\CurrentControlSet\\Control\\Class",
                       pszBuffer);
         }
     }
@@ -375,6 +419,30 @@ IsValidLogConf(
     _SEH2_TRY
     {
         if (pLogConfInfo->ulMagic != LOG_CONF_MAGIC)
+            bValid = FALSE;
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        bValid = FALSE;
+    }
+    _SEH2_END;
+
+    return bValid;
+}
+
+
+BOOL
+IsValidConflictData(
+    _In_opt_ PCONFLICT_DATA pConflictData)
+{
+    BOOL bValid = TRUE;
+
+    if (pConflictData == NULL)
+        return FALSE;
+
+    _SEH2_TRY
+    {
+        if (pConflictData->ulMagic != CONFLICT_MAGIC)
             bValid = FALSE;
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -533,9 +601,13 @@ CMP_RegisterNotification(
 {
     RPC_BINDING_HANDLE BindingHandle = NULL;
     PNOTIFY_DATA pNotifyData = NULL;
+    WCHAR szNameBuffer[256];
+    INT nLength;
+    DWORD ulUnknown9 = 0;
+    DWORD dwError;
     CONFIGRET ret = CR_SUCCESS;
 
-    TRACE("CMP_RegisterNotification(%p %p %lu %p)\n",
+    FIXME("CMP_RegisterNotification(%p %p %lu %p)\n",
           hRecipient, lpvNotificationFilter, ulFlags, phDevNotify);
 
     if ((hRecipient == NULL) ||
@@ -560,22 +632,48 @@ CMP_RegisterNotification(
 
     pNotifyData->ulMagic = NOTIFY_MAGIC;
 
-/*
-    if (dwFlags & DEVICE_NOTIFY_SERVICE_HANDLE == DEVICE_NOTYFY_WINDOW_HANDLE)
+    if ((ulFlags & DEVICE_NOTIFY_SERVICE_HANDLE) == DEVICE_NOTIFY_WINDOW_HANDLE)
     {
+        FIXME("Register a window\n");
 
+        nLength = GetWindowTextW((HWND)hRecipient,
+                                 szNameBuffer,
+                                 ARRAYSIZE(szNameBuffer));
+        if (nLength == 0)
+        {
+            HeapFree(GetProcessHeap(), 0, pNotifyData);
+            return CR_INVALID_DATA;
+        }
+
+        FIXME("Register window: %S\n", szNameBuffer);
     }
-    else if (dwFlags & DEVICE_NOTIFY_SERVICE_HANDLE == DEVICE_NOTYFY_SERVICE_HANDLE)
+    else if ((ulFlags & DEVICE_NOTIFY_SERVICE_HANDLE) == DEVICE_NOTIFY_SERVICE_HANDLE)
     {
+        FIXME("Register a service\n");
 
+        dwError = I_ScPnPGetServiceName((SERVICE_STATUS_HANDLE)hRecipient,
+                                        szNameBuffer,
+                                        ARRAYSIZE(szNameBuffer));
+        if (dwError != ERROR_SUCCESS)
+        {
+            HeapFree(GetProcessHeap(), 0, pNotifyData);
+            return CR_INVALID_DATA;
+        }
+
+        FIXME("Register service: %S\n", szNameBuffer);
     }
-*/
 
     RpcTryExcept
     {
         ret = PNP_RegisterNotification(BindingHandle,
+                                       0,            /* ??? */
+                                       szNameBuffer,
+                                       (BYTE*)lpvNotificationFilter,
+                                       ((DEV_BROADCAST_HDR*)lpvNotificationFilter)->dbch_size,
                                        ulFlags,
-                                       &pNotifyData->ulNotifyData);
+                                       &pNotifyData->ulNotifyData,
+                                       0,            /* ??? */
+                                       &ulUnknown9); /* ??? */
     }
     RpcExcept(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -774,7 +872,8 @@ CM_Add_Empty_Log_Conf(
  * CM_Add_Empty_Log_Conf_Ex [SETUPAPI.@]
  */
 CONFIGRET
-WINAPI CM_Add_Empty_Log_Conf_Ex(
+WINAPI
+CM_Add_Empty_Log_Conf_Ex(
     _Out_ PLOG_CONF plcLogConf,
     _In_ DEVINST dnDevInst,
     _In_ PRIORITY Priority,
@@ -1031,6 +1130,7 @@ CM_Add_Range(
         goto done;
     }
 
+    pRange->pRangeList = pRangeList;
     pRange->ullStart = ullStartValue;
     pRange->ullEnd = ullEndValue;
 
@@ -1041,7 +1141,8 @@ CM_Add_Range(
     }
     else
     {
-
+        HeapFree(GetProcessHeap(), 0, pRange);
+        UNIMPLEMENTED;
     }
 
 done:
@@ -1466,14 +1567,14 @@ CM_Delete_Class_Key_Ex(
 CONFIGRET
 WINAPI
 CM_Delete_DevNode_Key(
-    _In_ DEVNODE dnDevNode,
+    _In_ DEVINST dnDevInst,
     _In_ ULONG ulHardwareProfile,
     _In_ ULONG ulFlags)
 {
     TRACE("CM_Delete_DevNode_Key(%p %lu %lx)\n",
-          dnDevNode, ulHardwareProfile, ulFlags);
+          dnDevInst, ulHardwareProfile, ulFlags);
 
-    return CM_Delete_DevNode_Key_Ex(dnDevNode, ulHardwareProfile, ulFlags,
+    return CM_Delete_DevNode_Key_Ex(dnDevInst, ulHardwareProfile, ulFlags,
                                     NULL);
 }
 
@@ -1484,15 +1585,116 @@ CM_Delete_DevNode_Key(
 CONFIGRET
 WINAPI
 CM_Delete_DevNode_Key_Ex(
-    _In_ DEVNODE dnDevNode,
+    _In_ DEVINST dnDevInst,
     _In_ ULONG ulHardwareProfile,
     _In_ ULONG ulFlags,
     _In_opt_ HANDLE hMachine)
 {
-    FIXME("CM_Delete_DevNode_Key_Ex(%p %lu %lx %p)\n",
-          dnDevNode, ulHardwareProfile, ulFlags, hMachine);
+    RPC_BINDING_HANDLE BindingHandle = NULL;
+    HSTRING_TABLE StringTable = NULL;
+    PWSTR pszDevInst, pszKeyPath = NULL, pszInstancePath = NULL;
+    CONFIGRET ret;
 
-    return CR_CALL_NOT_IMPLEMENTED;
+    FIXME("CM_Delete_DevNode_Key_Ex(%p %lu %lx %p)\n",
+          dnDevInst, ulHardwareProfile, ulFlags, hMachine);
+
+    if (dnDevInst == 0)
+        return CR_INVALID_DEVINST;
+
+    if (ulFlags & ~CM_REGISTRY_BITS)
+        return CR_INVALID_FLAG;
+
+    if ((ulFlags & CM_REGISTRY_USER) && (ulFlags & CM_REGISTRY_CONFIG))
+        return CR_INVALID_FLAG;
+
+    if (hMachine != NULL)
+    {
+        BindingHandle = ((PMACHINE_INFO)hMachine)->BindingHandle;
+        if (BindingHandle == NULL)
+            return CR_FAILURE;
+
+        StringTable = ((PMACHINE_INFO)hMachine)->StringTable;
+        if (StringTable == 0)
+            return CR_FAILURE;
+    }
+    else
+    {
+        if (!PnpGetLocalHandles(&BindingHandle, &StringTable))
+            return CR_FAILURE;
+    }
+
+    pszDevInst = pSetupStringTableStringFromId(StringTable, dnDevInst);
+    if (pszDevInst == NULL)
+        return CR_INVALID_DEVNODE;
+
+    TRACE("pszDevInst: %S\n", pszDevInst);
+
+    pszKeyPath = MyMalloc(512 * sizeof(WCHAR));
+    if (pszKeyPath == NULL)
+    {
+        ret = CR_OUT_OF_MEMORY;
+        goto done;
+    }
+
+    pszInstancePath = MyMalloc(512 * sizeof(WCHAR));
+    if (pszInstancePath == NULL)
+    {
+        ret = CR_OUT_OF_MEMORY;
+        goto done;
+    }
+
+    ret = GetDeviceInstanceKeyPath(BindingHandle,
+                                   pszDevInst,
+                                   pszKeyPath,
+                                   pszInstancePath,
+                                   ulHardwareProfile,
+                                   ulFlags);
+    if (ret != CR_SUCCESS)
+        goto done;
+
+    TRACE("pszKeyPath: %S\n", pszKeyPath);
+    TRACE("pszInstancePath: %S\n", pszInstancePath);
+
+    if (ulFlags & CM_REGISTRY_USER)
+    {
+        FIXME("The CM_REGISTRY_USER flag is not supported yet!\n");
+    }
+    else
+    {
+#if 0
+        if (!pSetupIsUserAdmin())
+        {
+            ret = CR_ACCESS_DENIED;
+            goto done;
+        }
+#endif
+
+        if (!(ulFlags & CM_REGISTRY_CONFIG))
+            ulHardwareProfile = 0;
+
+        RpcTryExcept
+        {
+            ret = PNP_DeleteRegistryKey(BindingHandle,
+                                        pszDevInst,
+                                        pszKeyPath,
+                                        pszInstancePath,
+                                        ulHardwareProfile);
+        }
+        RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+        {
+            ret = RpcStatusToCmStatus(RpcExceptionCode());
+        }
+        RpcEndExcept;
+    }
+
+done:
+    if (pszInstancePath != NULL)
+        MyFree(pszInstancePath);
+
+    if (pszKeyPath != NULL)
+        MyFree(pszKeyPath);
+
+    return ret;
 }
 
 
@@ -1509,6 +1711,55 @@ CM_Delete_Range(
 {
     FIXME("CM_Delete_Range(%I64u %I64u %p %lx)\n",
           ullStartValue, ullEndValue, rlh, ulFlags);
+
+    return CR_CALL_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
+ * CM_Detect_Resource_Conflict [SETUPAPI.@]
+ */
+CONFIGRET
+WINAPI
+CM_Detect_Resource_Conflict(
+    _In_ DEVINST dnDevInst,
+    _In_ RESOURCEID ResourceID,
+    _In_reads_bytes_(ResourceLen) PCVOID ResourceData,
+    _In_ ULONG ResourceLen,
+    _Out_ PBOOL pbConflictDetected,
+    _In_ ULONG ulFlags)
+{
+    TRACE("CM_Detect_Resource_Conflict(%p %lu %p %lu %p 0x%lx)\n",
+          dnDevInst, ResourceID, ResourceData, ResourceLen,
+          pbConflictDetected, ulFlags);
+
+    return CM_Detect_Resource_Conflict_Ex(dnDevInst,
+                                          ResourceID,
+                                          ResourceData,
+                                          ResourceLen,
+                                          pbConflictDetected,
+                                          ulFlags,
+                                          NULL);
+}
+
+
+/***********************************************************************
+ * CM_Detect_Resource_Conflict_Ex [SETUPAPI.@]
+ */
+CONFIGRET
+WINAPI
+CM_Detect_Resource_Conflict_Ex(
+    _In_ DEVINST dnDevInst,
+    _In_ RESOURCEID ResourceID,
+    _In_reads_bytes_(ResourceLen) PCVOID ResourceData,
+    _In_ ULONG ResourceLen,
+    _Out_ PBOOL pbConflictDetected,
+    _In_ ULONG ulFlags,
+    _In_opt_ HMACHINE hMachine)
+{
+    FIXME("CM_Detect_Resource_Conflict_Ex(%p %lu %p %lu %p 0x%lx %p)\n",
+          dnDevInst, ResourceID, ResourceData, ResourceLen,
+          pbConflictDetected, ulFlags, hMachine);
 
     return CR_CALL_NOT_IMPLEMENTED;
 }
@@ -1545,7 +1796,7 @@ CM_Disable_DevNode_Ex(
     LPWSTR lpDevInst;
     CONFIGRET ret;
 
-    FIXME("CM_Disable_DevNode_Ex(%p %lx %p)\n",
+    TRACE("CM_Disable_DevNode_Ex(%p %lx %p)\n",
           dnDevInst, ulFlags, hMachine);
 
     if (!pSetupIsUserAdmin())
@@ -1579,11 +1830,12 @@ CM_Disable_DevNode_Ex(
 
     RpcTryExcept
     {
-        ret = PNP_DeviceInstanceAction(BindingHandle,
-                                       PNP_DEVINST_DISABLE,
-                                       ulFlags,
-                                       lpDevInst,
-                                       NULL);
+        ret = PNP_DisableDevInst(BindingHandle,
+                                 lpDevInst,
+                                 NULL,
+                                 NULL,
+                                 0,
+                                 ulFlags);
     }
     RpcExcept(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -2230,6 +2482,32 @@ CM_Free_Res_Des_Handle(
     FIXME("CM_Free_Res_Des_Handle(%p)\n", rdResDes);
 
     return CR_CALL_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
+ * CM_Free_Resource_Conflict_Handle [SETUPAPI.@]
+ */
+CONFIGRET
+WINAPI
+CM_Free_Resource_Conflict_Handle(
+    _In_ CONFLICT_LIST clConflictList)
+{
+    PCONFLICT_DATA pConflictData;
+
+    FIXME("CM_Free_Resource_Conflict_Handle(%p)\n",
+          clConflictList);
+
+    pConflictData = (PCONFLICT_DATA)clConflictList;
+    if (!IsValidConflictData(pConflictData))
+        return CR_INVALID_CONFLICT_LIST;
+
+    if (pConflictData->pConflictList != NULL)
+        MyFree(pConflictData->pConflictList);
+
+    MyFree(pConflictData);
+
+    return CR_SUCCESS;
 }
 
 
@@ -5098,6 +5376,67 @@ CM_Get_Res_Des_Data_Size_Ex(
 
 
 /***********************************************************************
+ * CM_Get_Resource_Conflict_Count [SETUPAPI.@]
+ */
+CONFIGRET
+WINAPI
+CM_Get_Resource_Conflict_Count(
+    _In_ CONFLICT_LIST clConflictList,
+    _Out_ PULONG pulCount)
+{
+    PCONFLICT_DATA pConflictData;
+
+    FIXME("CM_Get_Resource_Conflict_Count(%p %p)\n",
+          clConflictList, pulCount);
+
+    pConflictData = (PCONFLICT_DATA)clConflictList;
+    if (!IsValidConflictData(pConflictData))
+        return CR_INVALID_CONFLICT_LIST;
+
+    if (pulCount == NULL)
+        return CR_INVALID_POINTER;
+
+    *pulCount = pConflictData->pConflictList->ConflictsListed;
+
+    return CR_SUCCESS;
+}
+
+
+/***********************************************************************
+ * CM_Get_Resource_Conflict_DetailsA [SETUPAPI.@]
+ */
+CONFIGRET
+WINAPI
+CM_Get_Resource_Conflict_DetailsA(
+    _In_ CONFLICT_LIST clConflictList,
+    _In_ ULONG ulIndex,
+    _Inout_ PCONFLICT_DETAILS_A pConflictDetails)
+{
+    FIXME("CM_Get_Resource_Conflict_CountA(%p %lu %p)\n",
+          clConflictList, ulIndex, pConflictDetails);
+
+    return CR_CALL_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
+ * CM_Get_Resource_Conflict_DetailsW [SETUPAPI.@]
+ */
+CONFIGRET
+WINAPI
+CM_Get_Resource_Conflict_DetailsW(
+    _In_ CONFLICT_LIST clConflictList,
+    _In_ ULONG ulIndex,
+    _Inout_ PCONFLICT_DETAILS_W pConflictDetails)
+{
+    FIXME("CM_Get_Resource_Conflict_CountW(%p %lu %p)\n",
+          clConflictList, ulIndex, pConflictDetails);
+
+    return CR_CALL_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
  * CM_Get_Sibling [SETUPAPI.@]
  */
 CONFIGRET
@@ -5729,10 +6068,51 @@ CM_Next_Range(
     _Out_ PDWORDLONG pullEnd,
     _In_ ULONG ulFlags)
 {
+    PINTERNAL_RANGE_LIST pRangeList;
+    PINTERNAL_RANGE pRange;
+    PLIST_ENTRY ListEntry;
+    CONFIGRET ret = CR_SUCCESS;
+
     FIXME("CM_Next_Range(%p %p %p %lx)\n",
           preElement, pullStart, pullEnd, ulFlags);
 
-    return CR_CALL_NOT_IMPLEMENTED;
+    pRange = (PINTERNAL_RANGE)preElement;
+
+    if (pRange == NULL || pRange->pRangeList == NULL)
+        return CR_FAILURE;
+
+    if (pullStart == NULL || pullEnd == NULL)
+        return CR_INVALID_POINTER;
+
+    if (ulFlags != 0)
+        return CR_INVALID_FLAG;
+
+    pRangeList = pRange->pRangeList;
+
+    /* Lock the range list */
+    WaitForSingleObject(pRangeList->hMutex, INFINITE);
+
+    /* Fail, if we reached the end of the list */
+    if (pRange->ListEntry.Flink == &pRangeList->ListHead)
+    {
+        ret = CR_FAILURE;
+        goto done;
+    }
+
+    /* Get the next range */
+    ListEntry = pRangeList->ListHead.Flink;
+    pRange = CONTAINING_RECORD(ListEntry, INTERNAL_RANGE, ListEntry);
+
+    /* Return the range data */
+    *pullStart = pRange->ullStart;
+    *pullEnd = pRange->ullEnd;
+    *preElement = (RANGE_ELEMENT)pRange;
+
+done:
+    /* Unlock the range list */
+    ReleaseMutex(pRangeList->hMutex);
+
+    return ret;
 }
 
 
@@ -6456,6 +6836,124 @@ CM_Query_Remove_SubTree_Ex(
           dnAncestor, ulFlags, hMachine);
 
     return CR_CALL_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
+ * CM_Query_Resource_Conflict_List [SETUPAPI.@]
+ */
+CONFIGRET
+WINAPI
+CM_Query_Resource_Conflict_List(
+    _Out_ PCONFLICT_LIST pclConflictList,
+    _In_ DEVINST dnDevInst,
+    _In_ RESOURCEID ResourceID,
+    _In_ PCVOID ResourceData,
+    _In_ ULONG ResourceLen,
+    _In_ ULONG ulFlags,
+    _In_opt_ HMACHINE hMachine)
+{
+    RPC_BINDING_HANDLE BindingHandle = NULL;
+    HSTRING_TABLE StringTable = NULL;
+    PPNP_CONFLICT_LIST pConflictBuffer = NULL;
+    PCONFLICT_DATA pConflictData = NULL;
+    ULONG ulBufferLength;
+    LPWSTR lpDevInst;
+    CONFIGRET ret;
+
+    FIXME("CM_Query_Resource_Conflict_List(%p %lx %lu %p %lu %lx %p)\n",
+          pclConflictList, dnDevInst, ResourceID, ResourceData,
+          ResourceLen, ulFlags, hMachine);
+
+    if (dnDevInst == 0)
+        return CR_INVALID_DEVNODE;
+
+    if (ulFlags & ~CM_RESDES_WIDTH_BITS)
+        return CR_INVALID_FLAG;
+
+    if (pclConflictList == NULL ||
+        ResourceData == NULL ||
+        ResourceLen == 0)
+        return CR_INVALID_POINTER;
+
+    if (ResourceID == 0)
+        return CR_INVALID_RESOURCEID;
+
+    *pclConflictList = 0;
+
+    if (hMachine != NULL)
+    {
+        BindingHandle = ((PMACHINE_INFO)hMachine)->BindingHandle;
+        if (BindingHandle == NULL)
+            return CR_FAILURE;
+
+        StringTable = ((PMACHINE_INFO)hMachine)->StringTable;
+        if (StringTable == 0)
+            return CR_FAILURE;
+    }
+    else
+    {
+        if (!PnpGetLocalHandles(&BindingHandle, &StringTable))
+            return CR_FAILURE;
+    }
+
+    lpDevInst = pSetupStringTableStringFromId(StringTable, dnDevInst);
+    if (lpDevInst == NULL)
+        return CR_INVALID_DEVNODE;
+
+    pConflictData = MyMalloc(sizeof(CONFLICT_DATA));
+    if (pConflictData == NULL)
+    {
+        ret = CR_OUT_OF_MEMORY;
+        goto done;
+    }
+
+    ulBufferLength = sizeof(PNP_CONFLICT_LIST) +
+                     sizeof(PNP_CONFLICT_STRINGS) +
+                     (sizeof(wchar_t) * 200);
+    pConflictBuffer = MyMalloc(ulBufferLength);
+    if (pConflictBuffer == NULL)
+    {
+        ret = CR_OUT_OF_MEMORY;
+        goto done;
+    }
+
+    RpcTryExcept
+    {
+        ret = PNP_QueryResConfList(BindingHandle,
+                                   lpDevInst,
+                                   ResourceID,
+                                   (PBYTE)ResourceData,
+                                   ResourceLen,
+                                   (PBYTE)pConflictBuffer,
+                                   ulBufferLength,
+                                   ulFlags);
+    }
+    RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+    {
+        ret = RpcStatusToCmStatus(RpcExceptionCode());
+    }
+    RpcEndExcept;
+
+    if (ret != CR_SUCCESS)
+        goto done;
+
+    pConflictData->ulMagic = CONFLICT_MAGIC;
+    pConflictData->pConflictList = pConflictBuffer;
+
+    *pclConflictList = (CONFLICT_LIST)pConflictData;
+
+done:
+    if (ret != CR_SUCCESS)
+    {
+        if (pConflictBuffer != NULL)
+            MyFree(pConflictBuffer);
+
+        if (pConflictData != NULL)
+            MyFree(pConflictData);
+    }
+
+    return ret;
 }
 
 

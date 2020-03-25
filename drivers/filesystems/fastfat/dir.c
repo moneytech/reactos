@@ -104,7 +104,7 @@ VfatGetFileNamesInformation(
     if (FIELD_OFFSET(FILE_NAMES_INFORMATION, FileName) > BufferLength)
         return Status;
 
-    if (First || (BufferLength >= FIELD_OFFSET(FILE_NAMES_INFORMATION, FileName) + DirContext->LongNameU.Length))
+    if (First || (BufferLength > FIELD_OFFSET(FILE_NAMES_INFORMATION, FileName) + DirContext->LongNameU.Length))
     {
         pInfo->FileNameLength = DirContext->LongNameU.Length;
 
@@ -149,7 +149,7 @@ VfatGetFileDirectoryInformation(
     if (FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileName) > BufferLength)
         return Status;
 
-    if (First || (BufferLength >= FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileName) + DirContext->LongNameU.Length))
+    if (First || (BufferLength > FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileName) + DirContext->LongNameU.Length))
     {
         pInfo->FileNameLength = DirContext->LongNameU.Length;
         /* pInfo->FileIndex = ; */
@@ -266,7 +266,7 @@ VfatGetFileFullDirectoryInformation(
     if (FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, FileName) > BufferLength)
         return Status;
 
-    if (First || (BufferLength >= FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, FileName) + DirContext->LongNameU.Length))
+    if (First || (BufferLength > FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, FileName) + DirContext->LongNameU.Length))
     {
         pInfo->FileNameLength = DirContext->LongNameU.Length;
         /* pInfo->FileIndex = ; */
@@ -362,7 +362,7 @@ VfatGetFileBothInformation(
     if (FIELD_OFFSET(FILE_BOTH_DIR_INFORMATION, FileName) > BufferLength)
         return Status;
 
-    if (First || (BufferLength >= FIELD_OFFSET(FILE_BOTH_DIR_INFORMATION, FileName) + DirContext->LongNameU.Length))
+    if (First || (BufferLength > FIELD_OFFSET(FILE_BOTH_DIR_INFORMATION, FileName) + DirContext->LongNameU.Length))
     {
         pInfo->FileNameLength = DirContext->LongNameU.Length;
         pInfo->EaSize = 0;
@@ -530,13 +530,7 @@ DoQuery(
     }
 
     /* Obtain the callers parameters */
-#ifdef _MSC_VER
-    /* HACKHACK: Bug in the MS ntifs.h header:
-     * FileName is really a PUNICODE_STRING, not a PSTRING */
     pSearchPattern = (PUNICODE_STRING)Stack->Parameters.QueryDirectory.FileName;
-#else
-    pSearchPattern = Stack->Parameters.QueryDirectory.FileName;
-#endif
     FileInformationClass = Stack->Parameters.QueryDirectory.FileInformationClass;
 
     /* Allocate search pattern in case:
@@ -555,7 +549,7 @@ DoQuery(
             pCcb->SearchPattern.MaximumLength = pSearchPattern->Length + sizeof(WCHAR);
             pCcb->SearchPattern.Buffer = ExAllocatePoolWithTag(NonPagedPool,
                                                                pCcb->SearchPattern.MaximumLength,
-                                                               TAG_VFAT);
+                                                               TAG_SEARCH);
             if (!pCcb->SearchPattern.Buffer)
             {
                 ExReleaseResourceLite(&pFcb->MainResource);
@@ -572,7 +566,7 @@ DoQuery(
         pCcb->SearchPattern.MaximumLength = 2 * sizeof(WCHAR);
         pCcb->SearchPattern.Buffer = ExAllocatePoolWithTag(NonPagedPool,
                                                            2 * sizeof(WCHAR),
-                                                           TAG_VFAT);
+                                                           TAG_SEARCH);
         if (!pCcb->SearchPattern.Buffer)
         {
             ExReleaseResourceLite(&pFcb->MainResource);
@@ -599,6 +593,7 @@ DoQuery(
 
     DPRINT("Buffer=%p tofind=%wZ\n", Buffer, &pCcb->SearchPattern);
 
+    DirContext.DeviceExt = IrpContext->DeviceExt;
     DirContext.LongNameU.Buffer = LongNameBuffer;
     DirContext.LongNameU.MaximumLength = sizeof(LongNameBuffer);
     DirContext.ShortNameU.Buffer = ShortNameBuffer;

@@ -29,6 +29,8 @@
 #define TAG_ACCRESS_RANGE   'RAtS'
 #define TAG_RESOURCE_LIST   'LRtS'
 #define TAG_ADDRESS_MAPPING 'MAtS'
+#define TAG_INQUIRY_DATA    'QItS'
+#define TAG_SENSE_DATA      'NStS'
 
 typedef enum
 {
@@ -79,6 +81,12 @@ typedef struct _MINIPORT
     PMINIPORT_DEVICE_EXTENSION MiniportExtension;
 } MINIPORT, *PMINIPORT;
 
+typedef struct _UNIT_DATA
+{
+    LIST_ENTRY ListEntry;
+    INQUIRYDATA InquiryData;
+} UNIT_DATA, *PUNIT_DATA;
+
 typedef struct _FDO_DEVICE_EXTENSION
 {
     EXTENSION_TYPE ExtensionType;
@@ -103,6 +111,10 @@ typedef struct _FDO_DEVICE_EXTENSION
     PHW_PASSIVE_INITIALIZE_ROUTINE HwPassiveInitRoutine;
     PKINTERRUPT Interrupt;
     ULONG InterruptIrql;
+
+    KSPIN_LOCK PdoListLock;
+    LIST_ENTRY PdoListHead;
+    ULONG PdoCount;
 } FDO_DEVICE_EXTENSION, *PFDO_DEVICE_EXTENSION;
 
 
@@ -110,14 +122,27 @@ typedef struct _PDO_DEVICE_EXTENSION
 {
     EXTENSION_TYPE ExtensionType;
 
-    PDEVICE_OBJECT AttachedFdo;
-
+    PDEVICE_OBJECT Device;
+    PFDO_DEVICE_EXTENSION FdoExtension;
     DEVICE_STATE PnpState;
+    LIST_ENTRY PdoListEntry;
+
+    ULONG Bus;
+    ULONG Target;
+    ULONG Lun;
+    PINQUIRYDATA InquiryBuffer;
+
 
 } PDO_DEVICE_EXTENSION, *PPDO_DEVICE_EXTENSION;
 
 
 /* fdo.c */
+
+NTSTATUS
+NTAPI
+PortFdoScsi(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp);
 
 NTSTATUS
 NTAPI
@@ -145,6 +170,11 @@ MiniportHwInitialize(
 BOOLEAN
 MiniportHwInterrupt(
     _In_ PMINIPORT Miniport);
+
+BOOLEAN
+MiniportStartIo(
+    _In_ PMINIPORT Miniport,
+    _In_ PSCSI_REQUEST_BLOCK Srb);
 
 /* misc.c */
 
@@ -205,6 +235,24 @@ AllocateAddressMapping(
     ULONG BusNumber);
 
 /* pdo.c */
+
+NTSTATUS
+PortCreatePdo(
+    _In_ PFDO_DEVICE_EXTENSION FdoExtension,
+    _In_ ULONG Bus,
+    _In_ ULONG Target,
+    _In_ ULONG Lun,
+    _Out_ PPDO_DEVICE_EXTENSION *PdoExtension);
+
+NTSTATUS
+PortDeletePdo(
+    _In_ PPDO_DEVICE_EXTENSION PdoExtension);
+
+NTSTATUS
+NTAPI
+PortPdoScsi(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp);
 
 NTSTATUS
 NTAPI

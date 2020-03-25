@@ -254,29 +254,69 @@ IntEnableWindow( HWND hWnd, BOOL bEnable )
 HWND* FASTCALL
 IntWinListChildren(PWND Window)
 {
-   PWND Child;
-   HWND *List;
-   UINT Index, NumChildren = 0;
+    PWND Child;
+    HWND *List;
+    UINT Index, NumChildren = 0;
 
-   if (!Window) return NULL;
+    if (!Window) return NULL;
 
-   for (Child = Window->spwndChild; Child; Child = Child->spwndNext)
-      ++NumChildren;
+    for (Child = Window->spwndChild; Child; Child = Child->spwndNext)
+    {
+        ++NumChildren;
+    }
 
-   List = ExAllocatePoolWithTag(PagedPool, (NumChildren + 1) * sizeof(HWND), USERTAG_WINDOWLIST);
-   if(!List)
-   {
-      ERR("Failed to allocate memory for children array\n");
-      EngSetLastError(ERROR_NOT_ENOUGH_MEMORY);
-      return NULL;
-   }
-   for (Child = Window->spwndChild, Index = 0;
-         Child != NULL;
-         Child = Child->spwndNext, ++Index)
-      List[Index] = Child->head.h;
-   List[Index] = NULL;
+    List = ExAllocatePoolWithTag(PagedPool, (NumChildren + 1) * sizeof(HWND), USERTAG_WINDOWLIST);
+    if(!List)
+    {
+        ERR("Failed to allocate memory for children array\n");
+        EngSetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
 
-   return List;
+    Index = 0;
+    for (Child = Window->spwndChild; Child; Child = Child->spwndNext)
+    {
+        List[Index++] = Child->head.h;
+    }
+    List[Index] = NULL;
+
+    return List;
+}
+
+HWND* FASTCALL
+IntWinListOwnedPopups(PWND Window)
+{
+    PWND Child, Desktop;
+    HWND *List;
+    UINT Index, NumOwned = 0;
+
+    Desktop = co_GetDesktopWindow(Window);
+    if (!Desktop)
+        return NULL;
+
+    for (Child = Desktop->spwndChild; Child; Child = Child->spwndNext)
+    {
+        if (Child->spwndOwner == Window)
+            ++NumOwned;
+    }
+
+    List = ExAllocatePoolWithTag(PagedPool, (NumOwned + 1) * sizeof(HWND), USERTAG_WINDOWLIST);
+    if (!List)
+    {
+        ERR("Failed to allocate memory for children array\n");
+        EngSetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
+
+    Index = 0;
+    for (Child = Desktop->spwndChild; Child; Child = Child->spwndNext)
+    {
+        if (Child->spwndOwner == Window)
+            List[Index++] = Child->head.h;
+    }
+    List[Index] = NULL;
+
+    return List;
 }
 
 PWND FASTCALL
@@ -854,32 +894,41 @@ IntIsChildWindow(PWND Parent, PWND BaseWindow)
 }
 ////
 
-/*
-   Link the window into siblings list
-   children and parent are kept in place.
-*/
+/* Link the window into siblings list. Children and parent are kept in place. */
 VOID FASTCALL
 IntLinkWindow(
-   PWND Wnd,
-   PWND WndInsertAfter /* set to NULL if top sibling */
+    PWND Wnd,
+    PWND WndInsertAfter /* Set to NULL if top sibling */
 )
 {
-  if ((Wnd->spwndPrev = WndInsertAfter))
-   {
-      /* link after WndInsertAfter */
-      if ((Wnd->spwndNext = WndInsertAfter->spwndNext))
-         Wnd->spwndNext->spwndPrev = Wnd;
+    if (Wnd == WndInsertAfter)
+    {
+        ERR("IntLinkWindow -- Trying to link window 0x%p to itself!!\n", Wnd);
+        return;
+    }
 
-      Wnd->spwndPrev->spwndNext = Wnd;
-   }
-   else
-   {
-      /* link at top */
-     if ((Wnd->spwndNext = Wnd->spwndParent->spwndChild))
-         Wnd->spwndNext->spwndPrev = Wnd;
+    Wnd->spwndPrev = WndInsertAfter;
+    if (Wnd->spwndPrev)
+    {
+        /* Link after WndInsertAfter */
+        ASSERT(Wnd != WndInsertAfter->spwndNext);
+        Wnd->spwndNext = WndInsertAfter->spwndNext;
+        if (Wnd->spwndNext)
+            Wnd->spwndNext->spwndPrev = Wnd;
 
-     Wnd->spwndParent->spwndChild = Wnd;
-   }
+        ASSERT(Wnd != Wnd->spwndPrev);
+        Wnd->spwndPrev->spwndNext = Wnd;
+    }
+    else
+    {
+        /* Link at the top */
+        ASSERT(Wnd != Wnd->spwndParent->spwndChild);
+        Wnd->spwndNext = Wnd->spwndParent->spwndChild;
+        if (Wnd->spwndNext)
+            Wnd->spwndNext->spwndPrev = Wnd;
+
+        Wnd->spwndParent->spwndChild = Wnd;
+    }
 }
 
 /*
@@ -889,8 +938,8 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
 {
     if (hWndPrev == HWND_NOTOPMOST)
     {
-        if (!(Wnd->ExStyle & WS_EX_TOPMOST) &&
-            (Wnd->ExStyle2 & WS_EX2_LINKED)) return;  /* nothing to do */
+        if (!(Wnd->ExStyle & WS_EX_TOPMOST) && (Wnd->ExStyle2 & WS_EX2_LINKED))
+            return;  /* nothing to do */
         Wnd->ExStyle &= ~WS_EX_TOPMOST;
         hWndPrev = HWND_TOP;  /* fallback to the HWND_TOP case */
     }
@@ -903,8 +952,10 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
         PWND WndInsertAfter;
 
         WndInsertAfter = Wnd->spwndParent->spwndChild;
-        while( WndInsertAfter && WndInsertAfter->spwndNext)
+        while (WndInsertAfter && WndInsertAfter->spwndNext)
+        {
             WndInsertAfter = WndInsertAfter->spwndNext;
+        }
 
         IntLinkWindow(Wnd, WndInsertAfter);
         Wnd->ExStyle &= ~WS_EX_TOPMOST;
@@ -913,7 +964,6 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
     {
         /* Link in the top of the list */
         IntLinkWindow(Wnd, NULL);
-
         Wnd->ExStyle |= WS_EX_TOPMOST;
     }
     else if (hWndPrev == HWND_TOP)
@@ -927,7 +977,9 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
         {
             while (WndInsertBefore != NULL && WndInsertBefore->spwndNext != NULL)
             {
-                if (!(WndInsertBefore->ExStyle & WS_EX_TOPMOST)) break;
+                if (!(WndInsertBefore->ExStyle & WS_EX_TOPMOST))
+                    break;
+
                 if (WndInsertBefore == Wnd->spwndOwner)  /* keep it above owner */
                 {
                     Wnd->ExStyle |= WS_EX_TOPMOST;
@@ -946,13 +998,15 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
 
         WndInsertAfter = UserGetWindowObject(hWndPrev);
         /* Are we called with an erroneous handle */
-        if(WndInsertAfter == NULL)
+        if (WndInsertAfter == NULL)
         {
             /* Link in a default position */
             IntLinkHwnd(Wnd, HWND_TOP);
             return;
         }
 
+        if (Wnd == WndInsertAfter)
+            ERR("IntLinkHwnd -- Trying to link window 0x%p to itself!!\n", Wnd);
         IntLinkWindow(Wnd, WndInsertAfter);
 
         /* Fix the WS_EX_TOPMOST flag */
@@ -962,8 +1016,8 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
         }
         else
         {
-            if(WndInsertAfter->spwndNext &&
-               WndInsertAfter->spwndNext->ExStyle & WS_EX_TOPMOST)
+            if (WndInsertAfter->spwndNext &&
+                (WndInsertAfter->spwndNext->ExStyle & WS_EX_TOPMOST))
             {
                 Wnd->ExStyle |= WS_EX_TOPMOST;
             }
@@ -1247,20 +1301,23 @@ co_UserSetParent(HWND hWndChild, HWND hWndNewParent)
    return( hWndOldParent);
 }
 
-/* Unlink the window from siblings. children and parent are kept in place. */
+/* Unlink the window from siblings. Children and parent are kept in place. */
 VOID FASTCALL
 IntUnlinkWindow(PWND Wnd)
 {
-   if (Wnd->spwndNext)
-       Wnd->spwndNext->spwndPrev = Wnd->spwndPrev;
+    ASSERT(Wnd != Wnd->spwndNext);
+    ASSERT(Wnd != Wnd->spwndPrev);
 
-   if (Wnd->spwndPrev)
-       Wnd->spwndPrev->spwndNext = Wnd->spwndNext;
+    if (Wnd->spwndNext)
+        Wnd->spwndNext->spwndPrev = Wnd->spwndPrev;
 
-   if (Wnd->spwndParent && Wnd->spwndParent->spwndChild == Wnd)
-       Wnd->spwndParent->spwndChild = Wnd->spwndNext;
+    if (Wnd->spwndPrev)
+        Wnd->spwndPrev->spwndNext = Wnd->spwndNext;
 
-   Wnd->spwndPrev = Wnd->spwndNext = NULL;
+    if (Wnd->spwndParent && Wnd->spwndParent->spwndChild == Wnd)
+        Wnd->spwndParent->spwndChild = Wnd->spwndNext;
+
+    Wnd->spwndPrev = Wnd->spwndNext = NULL;
 }
 
 /* FUNCTIONS *****************************************************************/
@@ -1558,7 +1615,8 @@ PWND FASTCALL IntCreateWindow(CREATESTRUCTW* Cs,
                               PWND ParentWindow,
                               PWND OwnerWindow,
                               PVOID acbiBuffer,
-                              PDESKTOP pdeskCreated)
+                              PDESKTOP pdeskCreated,
+                              DWORD dwVer )
 {
    PWND pWnd = NULL;
    HWND hWnd;
@@ -1638,7 +1696,19 @@ PWND FASTCALL IntCreateWindow(CREATESTRUCTW* Cs,
    pWnd->spwndOwner = OwnerWindow;
    pWnd->fnid = 0;
    pWnd->spwndLastActive = pWnd;
-   pWnd->state2 |= WNDS2_WIN40COMPAT; // FIXME!!!
+   // Ramp up compatible version sets.
+   if ( dwVer >= WINVER_WIN31 )
+   {
+       pWnd->state2 |= WNDS2_WIN31COMPAT;
+       if ( dwVer >= WINVER_WINNT4 )
+       {
+           pWnd->state2 |= WNDS2_WIN40COMPAT;
+           if ( dwVer >= WINVER_WIN2K )
+           {
+               pWnd->state2 |= WNDS2_WIN50COMPAT;
+           }
+       }
+   }
    pWnd->pcls = Class;
    pWnd->hModule = Cs->hInstance;
    pWnd->style = Cs->style & ~WS_VISIBLE;
@@ -1899,7 +1969,8 @@ PWND FASTCALL
 co_UserCreateWindowEx(CREATESTRUCTW* Cs,
                      PUNICODE_STRING ClassName,
                      PLARGE_STRING WindowName,
-                     PVOID acbiBuffer)
+                     PVOID acbiBuffer,
+                     DWORD dwVer )
 {
    ULONG style;
    PWND Window = NULL, ParentWindow = NULL, OwnerWindow;
@@ -1960,6 +2031,16 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
          EngSetLastError(ERROR_TLW_WITH_WSCHILD);
          goto cleanup;  /* WS_CHILD needs a parent, but WS_POPUP doesn't */
     }
+    else if (Cs->lpszClass != (LPCWSTR)MAKEINTATOM(gpsi->atomSysClass[ICLS_DESKTOP]) &&
+             (IS_INTRESOURCE(Cs->lpszClass) ||
+              Cs->lpszClass != (LPCWSTR)MAKEINTATOM(gpsi->atomSysClass[ICLS_HWNDMESSAGE]) ||
+              _wcsicmp(Cs->lpszClass, L"Message") != 0))
+    {
+        if (pti->ppi->dwLayout & LAYOUT_RTL)
+        {
+            Cs->dwExStyle |= WS_EX_LAYOUTRTL;
+        }
+    }
 
     ParentWindow = hWndParent ? UserGetWindowObject(hWndParent): NULL;
     OwnerWindow = hWndOwner ? UserGetWindowObject(hWndOwner): NULL;
@@ -2006,7 +2087,8 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
                             ParentWindow,
                             OwnerWindow,
                             acbiBuffer,
-                            NULL);
+                            NULL,
+                            dwVer );
    if(!Window)
    {
        ERR("IntCreateWindow failed!\n");
@@ -2269,13 +2351,17 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
    IntSendParentNotify(Window, WM_CREATE);
 
    /* Notify the shell that a new window was created */
-   if (UserIsDesktopWindow(Window->spwndParent) &&
-       Window->spwndOwner == NULL &&
-       (Window->style & WS_VISIBLE) &&
-       (!(Window->ExStyle & WS_EX_TOOLWINDOW) ||
-        (Window->ExStyle & WS_EX_APPWINDOW)))
+   if (Window->spwndOwner == NULL ||
+       !(Window->spwndOwner->style & WS_VISIBLE) ||
+       (Window->spwndOwner->ExStyle & WS_EX_TOOLWINDOW))
    {
-      co_IntShellHookNotify(HSHELL_WINDOWCREATED, (WPARAM)hWnd, 0);
+      if (UserIsDesktopWindow(Window->spwndParent) &&
+          (Window->style & WS_VISIBLE) &&
+          (!(Window->ExStyle & WS_EX_TOOLWINDOW) ||
+           (Window->ExStyle & WS_EX_APPWINDOW)))
+      {
+         co_IntShellHookNotify(HSHELL_WINDOWCREATED, (WPARAM)hWnd, 0);
+      }
    }
 
    /* Initialize and show the window's scrollbars */
@@ -2531,7 +2617,7 @@ NtUserCreateWindowEx(
     UserEnterExclusive();
 
     /* Call the internal function */
-    pwnd = co_UserCreateWindowEx(&Cs, &ustrClsVersion, plstrWindowName, acbiBuffer);
+    pwnd = co_UserCreateWindowEx(&Cs, &ustrClsVersion, plstrWindowName, acbiBuffer, dwFlags);
 
     if(!pwnd)
     {
@@ -2572,7 +2658,7 @@ BOOLEAN co_UserDestroyWindow(PVOID Object)
    hWnd = Window->head.h;
    ti = PsGetCurrentThreadWin32Thread();
 
-   TRACE("co_UserDestroyWindow \n");
+   TRACE("co_UserDestroyWindow(Window = 0x%p, hWnd = 0x%p)\n", Window, hWnd);
 
    /* Check for owner thread */
    if ( Window->head.pti != PsGetCurrentThreadWin32Thread())
@@ -2632,7 +2718,7 @@ BOOLEAN co_UserDestroyWindow(PVOID Object)
       }
    }
 
-   // Adjust last active.
+   /* Adjust last active */
    if ((pwndTemp = Window->spwndOwner))
    {
       while (pwndTemp->spwndOwner)
@@ -2683,58 +2769,41 @@ BOOLEAN co_UserDestroyWindow(PVOID Object)
       return TRUE;
    }
 
-   /* Recursively destroy owned windows */
+    /* Recursively destroy owned windows */
+    if (!(Window->style & WS_CHILD))
+    {
+        HWND* List;
+        HWND* phWnd;
+        PWND pWnd;
 
-   if (! (Window->style & WS_CHILD))
-   {
-      for (;;)
-      {
-         BOOL GotOne = FALSE;
-         HWND *Children;
-         HWND *ChildHandle;
-         PWND Child, Desktop;
-
-         Desktop = IntIsDesktopWindow(Window) ? Window :
-                   UserGetWindowObject(IntGetDesktopWindow());
-         Children = IntWinListChildren(Desktop);
-
-         if (Children)
-         {
-            for (ChildHandle = Children; *ChildHandle; ++ChildHandle)
+        List = IntWinListOwnedPopups(Window);
+        if (List)
+        {
+            for (phWnd = List; *phWnd; ++phWnd)
             {
-               Child = UserGetWindowObject(*ChildHandle);
-               if (Child == NULL)
-                  continue;
-               if (Child->spwndOwner != Window)
-               {
-                  continue;
-               }
+                pWnd = ValidateHwndNoErr(*phWnd);
+                if (pWnd == NULL)
+                    continue;
+                ASSERT(pWnd->spwndOwner == Window);
+                ASSERT(pWnd != Window);
 
-               if (IntWndBelongsToThread(Child, PsGetCurrentThreadWin32Thread()))
-               {
-                  USER_REFERENCE_ENTRY ChildRef;
-                  UserRefObjectCo(Child, &ChildRef); // Temp HACK?
-                  co_UserDestroyWindow(Child);
-                  UserDerefObjectCo(Child); // Temp HACK?
-
-                  GotOne = TRUE;
-                  continue;
-               }
-
-               if (Child->spwndOwner != NULL)
-               {
-                  Child->spwndOwner = NULL;
-               }
-
+                pWnd->spwndOwner = NULL;
+                if (IntWndBelongsToThread(pWnd, PsGetCurrentThreadWin32Thread()))
+                {
+                    USER_REFERENCE_ENTRY Ref;
+                    UserRefObjectCo(pWnd, &Ref); // Temp HACK?
+                    co_UserDestroyWindow(pWnd);
+                    UserDerefObjectCo(pWnd); // Temp HACK?
+                }
+                else
+                {
+                    ERR("IntWndBelongsToThread(0x%p) is FALSE, ignoring.\n", pWnd);
+                }
             }
-            ExFreePoolWithTag(Children, USERTAG_WINDOWLIST);
-         }
-         if (! GotOne)
-         {
-            break;
-         }
-      }
-   }
+
+            ExFreePoolWithTag(List, USERTAG_WINDOWLIST);
+        }
+    }
 
     /* Generate mouse move message for the next window */
     msg.message = WM_MOUSEMOVE;
@@ -3988,7 +4057,7 @@ NtUserQueryWindow(HWND hWnd, DWORD Index)
          break;
 
       case QUERY_WINDOW_ISHUNG:
-         Result = (DWORD_PTR)MsqIsHung(pWnd->head.pti);
+         Result = (DWORD_PTR)MsqIsHung(pWnd->head.pti, MSQ_HUNG);
          break;
 
       case QUERY_WINDOW_REAL_ID:
@@ -4383,7 +4452,9 @@ IntShowOwnedPopups(PWND OwnerWnd, BOOL fShow )
 //   ASSERT(OwnerWnd);
 
    TRACE("Enter ShowOwnedPopups Show: %s\n", (fShow ? "TRUE" : "FALSE"));
-   win_array = IntWinListChildren(OwnerWnd);
+
+   /* NOTE: Popups are not children */
+   win_array = IntWinListOwnedPopups(OwnerWnd);
 
    if (!win_array)
       return TRUE;
@@ -4406,6 +4477,7 @@ IntShowOwnedPopups(PWND OwnerWnd, BOOL fShow )
              * regardless of the state of the owner
              */
             co_IntSendMessage(win_array[count], WM_SHOWWINDOW, SW_SHOWNORMAL, SW_PARENTOPENING);
+            pWnd->state &= ~WNDS_HIDDENPOPUP;
             continue;
          }
       }
@@ -4418,10 +4490,10 @@ IntShowOwnedPopups(PWND OwnerWnd, BOOL fShow )
              * regardless of the state of the owner
              */
             co_IntSendMessage(win_array[count], WM_SHOWWINDOW, SW_HIDE, SW_PARENTCLOSING);
+            pWnd->state |= WNDS_HIDDENPOPUP;
             continue;
          }
       }
-
    }
    ExFreePoolWithTag(win_array, USERTAG_WINDOWLIST);
    TRACE("Leave ShowOwnedPopups\n");

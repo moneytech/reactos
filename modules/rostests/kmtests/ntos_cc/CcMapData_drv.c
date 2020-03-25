@@ -20,11 +20,20 @@ typedef struct _TEST_FCB
     FAST_MUTEX HeaderMutex;
 } TEST_FCB, *PTEST_FCB;
 
+typedef struct _TEST_CONTEXT
+{
+    PVOID Bcb;
+    PVOID Buffer;
+    ULONG Length;
+} TEST_CONTEXT, *PTEST_CONTEXT;
+
 static ULONG TestTestId = -1;
 static PFILE_OBJECT TestFileObject;
 static PDEVICE_OBJECT TestDeviceObject;
 static KMT_IRP_HANDLER TestIrpHandler;
 static KMT_MESSAGE_HANDLER TestMessageHandler;
+static ULONGLONG Memory = 0;
+static BOOLEAN TS = FALSE;
 
 NTSTATUS
 TestEntry(
@@ -33,7 +42,10 @@ TestEntry(
     _Out_ PCWSTR *DeviceName,
     _Inout_ INT *Flags)
 {
+    ULONG Length;
+    SYSTEM_BASIC_INFORMATION SBI;
     NTSTATUS Status = STATUS_SUCCESS;
+    RTL_OSVERSIONINFOEXW VersionInfo;
 
     PAGED_CODE();
 
@@ -47,6 +59,32 @@ TestEntry(
     KmtRegisterIrpHandler(IRP_MJ_READ, NULL, TestIrpHandler);
     KmtRegisterMessageHandler(0, NULL, TestMessageHandler);
 
+    Status = ZwQuerySystemInformation(SystemBasicInformation,
+                                      &SBI,
+                                      sizeof(SBI),
+                                      &Length);
+    if (NT_SUCCESS(Status))
+    {
+        Memory = (SBI.NumberOfPhysicalPages * SBI.PageSize) / 1024 / 1024;
+    }
+    else
+    {
+        Status = STATUS_SUCCESS;
+    }
+
+    VersionInfo.dwOSVersionInfoSize = sizeof(VersionInfo);
+    Status = RtlGetVersion((PRTL_OSVERSIONINFOW)&VersionInfo);
+    if (NT_SUCCESS(Status))
+    {
+        TS = BooleanFlagOn(VersionInfo.wSuiteMask, VER_SUITE_TERMINAL) &&
+             !BooleanFlagOn(VersionInfo.wSuiteMask, VER_SUITE_SINGLEUSERTS);
+    }
+    else
+    {
+        Status = STATUS_SUCCESS;
+    }
+
+    trace("System with %I64dMb RAM and terminal services %S\n",  Memory, (TS ? L"enabled" : L"disabled"));
 
     return Status;
 }
@@ -139,6 +177,92 @@ MapAndLockUserBuffer(
 
 static
 VOID
+NTAPI
+MapInAnotherThread(IN PVOID Context)
+{
+    BOOLEAN Ret;
+    PULONG Buffer;
+    PVOID Bcb;
+    LARGE_INTEGER Offset;
+    PTEST_CONTEXT TestContext;
+
+    ok(TestFileObject != NULL, "Called in invalid context!\n");
+    ok_eq_ulong(TestTestId, 3);
+
+    TestContext = Context;
+    ok(TestContext != NULL, "Called in invalid context!\n");
+    ok(TestContext->Bcb != NULL, "Called in invalid context!\n");
+    ok(TestContext->Buffer != NULL, "Called in invalid context!\n");
+    ok(TestContext->Length != 0, "Called in invalid context!\n");
+
+    Ret = FALSE;
+    Offset.QuadPart = 0x1000;
+    KmtStartSeh();
+    Ret = CcMapData(TestFileObject, &Offset, TestContext->Length, MAP_WAIT, &Bcb, (PVOID *)&Buffer);
+    KmtEndSeh(STATUS_SUCCESS);
+
+    if (!skip(Ret == TRUE, "CcMapData failed\n"))
+    {
+        ok_eq_pointer(Bcb, TestContext->Bcb);
+        ok_eq_pointer(Buffer, TestContext->Buffer);
+
+        CcUnpinData(Bcb);
+    }
+
+    KmtStartSeh();
+    Ret = CcPinRead(TestFileObject, &Offset, TestContext->Length, 0, &Bcb, (PVOID *)&Buffer);
+    KmtEndSeh(STATUS_SUCCESS);
+
+    if (!skip(Ret == TRUE, "CcPinRead failed\n"))
+    {
+        ok(Bcb != TestContext->Bcb, "Returned same BCB!\n");
+        ok_eq_pointer(Buffer, TestContext->Buffer);
+
+        CcUnpinData(Bcb);
+    }
+
+    KmtStartSeh();
+    Ret = CcPinRead(TestFileObject, &Offset, TestContext->Length, PIN_IF_BCB, &Bcb, (PVOID *)&Buffer);
+    KmtEndSeh(STATUS_SUCCESS);
+    ok(Ret == FALSE, "CcPinRead succeed\n");
+
+    if (Ret)
+    {
+        CcUnpinData(Bcb);
+    }
+
+    KmtStartSeh();
+    Ret = CcPinRead(TestFileObject, &Offset, TestContext->Length, PIN_EXCLUSIVE, &Bcb, (PVOID *)&Buffer);
+    KmtEndSeh(STATUS_SUCCESS);
+
+    if (!skip(Ret == TRUE, "CcPinRead failed\n"))
+    {
+        ok(Bcb != TestContext->Bcb, "Returned same BCB!\n");
+        ok_eq_pointer(Buffer, TestContext->Buffer);
+
+        CcUnpinData(Bcb);
+    }
+
+    Offset.QuadPart = 0x1500;
+    TestContext->Length -= 0x500;
+
+    KmtStartSeh();
+    Ret = CcMapData(TestFileObject, &Offset, TestContext->Length, MAP_WAIT, &Bcb, (PVOID *)&Buffer);
+    KmtEndSeh(STATUS_SUCCESS);
+
+    if (!skip(Ret == TRUE, "CcMapData failed\n"))
+    {
+        ok_eq_pointer(Bcb, TestContext->Bcb);
+        ok_eq_pointer(Buffer, (PVOID)((ULONG_PTR)TestContext->Buffer + 0x500));
+
+        CcUnpinData(Bcb);
+    }
+
+    return;
+}
+
+static
+VOID
 PerformTest(
     ULONG TestId,
     PDEVICE_OBJECT DeviceObject)
@@ -174,17 +298,120 @@ PerformTest(
 
             if (!skip(CcIsFileCached(TestFileObject) == TRUE, "CcInitializeCacheMap failed\n"))
             {
-                Ret = FALSE;
-                Offset.QuadPart = TestId * 0x1000;
-                KmtStartSeh();
-                Ret = CcMapData(TestFileObject, &Offset, FileSizes.FileSize.QuadPart - Offset.QuadPart, MAP_WAIT, &Bcb, (PVOID *)&Buffer);
-                KmtEndSeh(STATUS_SUCCESS);
-
-                if (!skip(Ret == TRUE, "CcMapData failed\n"))
+                if (TestId < 3)
                 {
-                    ok_eq_ulong(Buffer[(0x3000 - TestId * 0x1000) / sizeof(ULONG)], 0xDEADBABE);
+                    Ret = FALSE;
+                    Offset.QuadPart = TestId * 0x1000;
+                    KmtStartSeh();
+                    Ret = CcMapData(TestFileObject, &Offset, FileSizes.FileSize.QuadPart - Offset.QuadPart, MAP_WAIT, &Bcb, (PVOID *)&Buffer);
+                    KmtEndSeh(STATUS_SUCCESS);
 
-                    CcUnpinData(Bcb);
+                    if (!skip(Ret == TRUE, "CcMapData failed\n"))
+                    {
+                        ok_eq_ulong(Buffer[(0x3000 - TestId * 0x1000) / sizeof(ULONG)], 0xDEADBABE);
+
+                        CcUnpinData(Bcb);
+                    }
+                }
+                else if (TestId == 3)
+                {
+                    PTEST_CONTEXT TestContext;
+
+                    TestContext = ExAllocatePool(NonPagedPool, sizeof(TEST_CONTEXT));
+                    if (!skip(TestContext != NULL, "ExAllocatePool failed\n"))
+                    {
+                        Ret = FALSE;
+                        Offset.QuadPart = 0x1000;
+                        KmtStartSeh();
+                        Ret = CcMapData(TestFileObject, &Offset, FileSizes.FileSize.QuadPart - Offset.QuadPart, MAP_WAIT, &TestContext->Bcb, &TestContext->Buffer);
+                        KmtEndSeh(STATUS_SUCCESS);
+
+                        if (!skip(Ret == TRUE, "CcMapData failed\n"))
+                        {
+                            PKTHREAD ThreadHandle;
+
+                            /* That's a bit rough but should do the job */
+#ifdef _X86_
+                            if (Memory >= 2 * 1024)
+                            {
+                                ok((TestContext->Buffer >= (PVOID)0xC1000000 && TestContext->Buffer < (PVOID)0xE0FFFFFF) ||
+                                   (TestContext->Buffer >= (PVOID)0xA4000000 && TestContext->Buffer < (PVOID)0xBFFFFFFF),
+                                   "Buffer %p not mapped in system space\n", TestContext->Buffer);
+                            }
+                            else if (TS)
+                            {
+                                ok(TestContext->Buffer >= (PVOID)0xC1000000 && TestContext->Buffer < (PVOID)0xDCFFFFFF,
+                                   "Buffer %p not mapped in system space\n", TestContext->Buffer);
+                            }
+                            else
+                            {
+                                ok(TestContext->Buffer >= (PVOID)0xC1000000 && TestContext->Buffer < (PVOID)0xDBFFFFFF,
+                                   "Buffer %p not mapped in system space\n", TestContext->Buffer);
+                            }
+#elif defined(_M_AMD64)
+                            ok(TestContext->Buffer >= (PVOID)0xFFFFF98000000000 && TestContext->Buffer < (PVOID)0xFFFFFA8000000000,
+                               "Buffer %p not mapped in system space\n", TestContext->Buffer);
+#else
+                            skip(FALSE, "System space mapping not defined\n");
+#endif
+
+                            TestContext->Length = FileSizes.FileSize.QuadPart - Offset.QuadPart;
+                            ThreadHandle = KmtStartThread(MapInAnotherThread, TestContext);
+                            KmtFinishThread(ThreadHandle, NULL);
+
+                            TestContext->Length = FileSizes.FileSize.QuadPart - 2 * Offset.QuadPart;
+                            ThreadHandle = KmtStartThread(MapInAnotherThread, TestContext);
+                            KmtFinishThread(ThreadHandle, NULL);
+
+                            CcUnpinData(TestContext->Bcb);
+                        }
+
+                        ExFreePool(TestContext);
+                    }
+                }
+                else if (TestId == 4)
+                {
+                    /* Map after EOF */
+                    Ret = FALSE;
+                    Offset.QuadPart = FileSizes.FileSize.QuadPart + 0x1000;
+
+                    KmtStartSeh();
+                    Ret = CcMapData(TestFileObject, &Offset, 0x1000, 0, &Bcb, (PVOID *)&Buffer);
+                    KmtEndSeh(STATUS_SUCCESS);
+                    ok(Ret == FALSE, "CcMapData succeed\n");
+
+                    if (Ret)
+                    {
+                        CcUnpinData(Bcb);
+                    }
+
+                    /* Map a VACB after EOF */
+                    Ret = FALSE;
+                    Offset.QuadPart = FileSizes.FileSize.QuadPart + 0x1000 + VACB_MAPPING_GRANULARITY;
+
+                    KmtStartSeh();
+                    Ret = CcMapData(TestFileObject, &Offset, 0x1000, 0, &Bcb, (PVOID *)&Buffer);
+                    KmtEndSeh(STATUS_ACCESS_VIOLATION);
+                    ok(Ret == FALSE, "CcMapData succeed\n");
+
+                    if (Ret)
+                    {
+                        CcUnpinData(Bcb);
+                    }
+
+                    /* Map more than a VACB */
+                    Ret = FALSE;
+                    Offset.QuadPart = 0x0;
+
+                    KmtStartSeh();
+                    Ret = CcMapData(TestFileObject, &Offset, 0x1000 + VACB_MAPPING_GRANULARITY, 0, &Bcb, (PVOID *)&Buffer);
+                    KmtEndSeh(STATUS_SUCCESS);
+                    ok(Ret == FALSE, "CcMapData succeed\n");
+
+                    if (Ret)
+                    {
+                        CcUnpinData(Bcb);
+                    }
                 }
             }
         }
@@ -240,6 +467,8 @@ TestMessageHandler(
 {
     NTSTATUS Status = STATUS_SUCCESS;
 
+    FsRtlEnterFileSystem();
+
     switch (ControlCode)
     {
         case IOCTL_START_TEST:
@@ -257,6 +486,8 @@ TestMessageHandler(
             break;
     }
 
+    FsRtlExitFileSystem();
+
     return Status;
 }
 
@@ -273,6 +504,8 @@ TestIrpHandler(
 
     DPRINT("IRP %x/%x\n", IoStack->MajorFunction, IoStack->MinorFunction);
     ASSERT(IoStack->MajorFunction == IRP_MJ_READ);
+
+    FsRtlEnterFileSystem();
 
     Status = STATUS_NOT_SUPPORTED;
     Irp->IoStatus.Information = 0;
@@ -328,6 +561,8 @@ TestIrpHandler(
         Irp->IoStatus.Status = Status;
         IoCompleteRequest(Irp, IO_NO_INCREMENT);
     }
+
+    FsRtlExitFileSystem();
 
     return Status;
 }

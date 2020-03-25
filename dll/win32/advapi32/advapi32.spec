@@ -294,7 +294,7 @@
 294 stdcall GetUserNameA(ptr ptr)
 295 stdcall GetUserNameW(ptr ptr)
 296 stdcall GetWindowsAccountDomainSid(ptr ptr ptr)
-297 stub I_QueryTagInformation
+297 stdcall I_QueryTagInformation(ptr long ptr)
 298 stdcall I_ScIsSecurityProcess()
 299 stdcall I_ScPnPGetServiceName(ptr wstr long)
 300 stub I_ScSendTSMessage
@@ -682,3 +682,5 @@
 682 stub WmiSetSingleItemW
 683 stub Wow64Win32ApiEntry
 684 stdcall WriteEncryptedFileRaw(ptr ptr ptr)
+685 stdcall -version=0x600+ RegLoadMUIStringW(ptr wstr wstr long ptr long wstr) advapi32_vista.RegLoadMUIStringW
+686 stdcall -version=0x600+ RegLoadMUIStringA(ptr str str long ptr long str) advapi32_vista.RegLoadMUIStringA

@@ -17,8 +17,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include "config.h"
-
 #include <stdarg.h>
 
 #define NONAMELESSUNION
@@ -309,13 +307,11 @@ static LONG WINTRUST_DefaultVerify(HWND hwnd, GUID *actionID,
     goto done;
 
 error:
-    if (provData)
-    {
-        WINTRUST_Free(provData->padwTrustStepErrors);
-        WINTRUST_Free(provData->u.pPDSip);
-        WINTRUST_Free(provData->psPfns);
-        WINTRUST_Free(provData);
-    }
+    WINTRUST_Free(provData->padwTrustStepErrors);
+    WINTRUST_Free(provData->u.pPDSip);
+    WINTRUST_Free(provData->psPfns);
+    WINTRUST_Free(provData);
+
 done:
     TRACE("returning %08x\n", err);
     return err;
@@ -502,13 +498,11 @@ static LONG WINTRUST_CertVerify(HWND hwnd, GUID *actionID,
     goto done;
 
 error:
-    if (provData)
-    {
-        WINTRUST_Free(provData->padwTrustStepErrors);
-        WINTRUST_Free(provData->u.pPDSip);
-        WINTRUST_Free(provData->psPfns);
-        WINTRUST_Free(provData);
-    }
+    WINTRUST_Free(provData->padwTrustStepErrors);
+    WINTRUST_Free(provData->u.pPDSip);
+    WINTRUST_Free(provData->psPfns);
+    WINTRUST_Free(provData);
+
 done:
     TRACE("returning %08x\n", err);
     return err;
@@ -787,7 +781,7 @@ CRYPT_PROVIDER_CERT * WINAPI WTHelperGetProvCertFromChain(
 
     TRACE("(%p %d)\n", pSgnr, idxCert);
 
-    if (idxCert >= pSgnr->csCertChain || !pSgnr->pasCertChain)
+    if (!pSgnr || idxCert >= pSgnr->csCertChain || !pSgnr->pasCertChain)
         return NULL;
     cert = &pSgnr->pasCertChain[idxCert];
     TRACE("returning %p\n", cert);

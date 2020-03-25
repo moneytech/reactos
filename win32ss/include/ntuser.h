@@ -167,7 +167,7 @@ typedef struct _CLIENTTHREADINFO
     WORD fsWakeBits;
     WORD fsWakeBitsJournal;
     WORD fsWakeMask;
-    ULONG tickLastMsgChecked;
+    ULONG timeLastRead; // Last time the message queue was read.
     DWORD dwcPumpHook;
 } CLIENTTHREADINFO, *PCLIENTTHREADINFO;
 
@@ -2439,7 +2439,7 @@ HDESK
 NTAPI
 NtUserGetThreadDesktop(
     DWORD dwThreadId,
-    DWORD Unknown1);
+    HDESK hConsoleDesktop);
 
 enum ThreadStateRoutines
 {
@@ -2912,11 +2912,11 @@ NtUserRemoveProp(
     ATOM Atom);
 
 HDESK
-APIENTRY
+NTAPI
 NtUserResolveDesktop(
     IN HANDLE ProcessHandle,
     IN PUNICODE_STRING DesktopPath,
-    DWORD dwUnknown,
+    IN BOOL bInherit,
     OUT HWINSTA* phWinSta);
 
 DWORD
@@ -3289,10 +3289,10 @@ NtUserSetWindowsHookEx(
 BOOL
 NTAPI
 NtUserSetWindowStationUser(
-    HWINSTA hWindowStation,
-    PLUID pluid,
-    PSID psid,
-    DWORD size);
+    IN HWINSTA hWindowStation,
+    IN PLUID pluid,
+    IN PSID psid OPTIONAL,
+    IN DWORD size);
 
 WORD
 NTAPI

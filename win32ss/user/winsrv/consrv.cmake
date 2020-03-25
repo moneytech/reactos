@@ -28,6 +28,7 @@ list(APPEND CONSRV_SOURCE
     consrv/condrv/text.c
     consrv/frontends/input.c
     consrv/frontends/terminal.c
+    consrv/frontends/wcwidth.c
     consrv/frontends/gui/conwnd.c
     consrv/frontends/gui/fullscreen.c
     consrv/frontends/gui/guiterm.c
@@ -56,6 +57,6 @@ add_dependencies(consrv psdk)
 add_pch(consrv consrv/consrv.h CONSRV_SOURCE)
 #add_object_library(consrv ${CONSRV_SOURCE})
 list(APPEND CONSRV_IMPORT_LIBS psapi)
-list(APPEND CONSRV_DELAY_IMPORT_LIBS ole32)
+list(APPEND CONSRV_DELAY_IMPORT_LIBS shell32 ole32)
 list(APPEND CONSRV_TARGET_LINK_LIBS concfg uuid)
 set_module_type(consrv module UNICODE)

@@ -119,7 +119,7 @@ static void test_decoder_info(void)
     UINT num_formats, count;
     int i, j;
 
-    for (i = 0; i < sizeof(decoder_info_tests)/sizeof(decoder_info_tests[0]); i++)
+    for (i = 0; i < ARRAY_SIZE(decoder_info_tests); i++)
     {
         struct decoder_info_test *test = &decoder_info_tests[i];
         IWICBitmapDecoder *decoder, *decoder2;
@@ -139,7 +139,6 @@ static void test_decoder_info(void)
             decoder_info2 = NULL;
             hr = IWICBitmapDecoder_GetDecoderInfo(decoder, &decoder_info2);
             ok(hr == S_OK, "Failed to get decoder info, hr %#x.\n", hr);
-        todo_wine
             ok(decoder_info == decoder_info2, "Unexpected decoder info instance.\n");
 
             hr = IWICBitmapDecoderInfo_QueryInterface(decoder_info, &IID_IWICBitmapDecoder, (void **)&decoder2);
@@ -150,8 +149,8 @@ static void test_decoder_info(void)
         }
         IWICBitmapDecoder_Release(decoder);
 
-        MultiByteToWideChar(CP_ACP, 0, test->mimetype, -1, mimetypeW, sizeof(mimetypeW)/sizeof(mimetypeW[0]));
-        MultiByteToWideChar(CP_ACP, 0, test->extensions, -1, extensionsW, sizeof(extensionsW)/sizeof(extensionsW[0]));
+        MultiByteToWideChar(CP_ACP, 0, test->mimetype, -1, mimetypeW, ARRAY_SIZE(mimetypeW));
+        MultiByteToWideChar(CP_ACP, 0, test->extensions, -1, extensionsW, ARRAY_SIZE(extensionsW));
 
         hr = get_component_info(test->clsid, &info);
         ok(hr == S_OK, "CreateComponentInfo failed, hr=%x\n", hr);
@@ -235,8 +234,8 @@ static void test_decoder_info(void)
         ok(hr == E_INVALIDARG, "GetPixelFormats failed, hr=%x\n", hr);
 
         count = 0xdeadbeef;
-        hr = IWICBitmapDecoderInfo_GetPixelFormats(decoder_info, sizeof(pixelformats)/sizeof(pixelformats[0]),
-            pixelformats, &count);
+        hr = IWICBitmapDecoderInfo_GetPixelFormats(decoder_info, ARRAY_SIZE(pixelformats),
+                                                   pixelformats, &count);
         ok(hr == S_OK, "GetPixelFormats failed, hr=%x\n", hr);
         ok(count == num_formats, "got %d formats, expected %d\n", count, num_formats);
 
@@ -470,16 +469,37 @@ static void test_pixelformat_info(void)
     IWICComponentInfo_Release(info);
 }
 
+static DWORD WINAPI cache_across_threads_test(void *arg)
+{
+    IWICComponentInfo *info;
+    HRESULT hr;
+
+    CoInitialize(NULL);
+
+    hr = get_component_info(&CLSID_WICUnknownMetadataReader, &info);
+    ok(hr == S_OK, "CreateComponentInfo failed, hr=%x\n", hr);
+    ok(info == arg, "unexpected info pointer %p\n", info);
+    IWICComponentInfo_Release(info);
+
+    CoUninitialize();
+    return 0;
+}
+
 static void test_reader_info(void)
 {
     IWICImagingFactory *factory;
-    IWICComponentInfo *info;
+    IWICComponentInfo *info, *info2;
     IWICMetadataReaderInfo *reader_info;
     HRESULT hr;
     CLSID clsid;
     GUID container_formats[10];
-    UINT count, size;
+    UINT count, size, tid;
+    HANDLE thread;
     WICMetadataPattern *patterns;
+
+    hr = get_component_info(&CLSID_WICUnknownMetadataReader, &info2);
+    ok(hr == S_OK, "CreateComponentInfo failed, hr=%x\n", hr);
+    IWICComponentInfo_Release(info2);
 
     hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
         &IID_IWICImagingFactory, (void**)&factory);
@@ -488,6 +508,11 @@ static void test_reader_info(void)
 
     hr = IWICImagingFactory_CreateComponentInfo(factory, &CLSID_WICUnknownMetadataReader, &info);
     ok(hr == S_OK, "CreateComponentInfo failed, hr=%x\n", hr);
+    ok(info == info2, "info != info2\n");
+
+    thread = CreateThread(NULL, 0, cache_across_threads_test, info, 0, &tid);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
 
     hr = IWICComponentInfo_QueryInterface(info, &IID_IWICMetadataReaderInfo, (void**)&reader_info);
     ok(hr == S_OK, "QueryInterface failed, hr=%x\n", hr);
@@ -612,6 +637,38 @@ todo_wine
     IWICImagingFactory_Release(factory);
 }
 
+static void test_imagingfactory_interfaces(void)
+{
+    IWICComponentFactory *component_factory;
+    IWICImagingFactory2 *factory2;
+    IWICImagingFactory *factory;
+    HRESULT hr;
+
+    hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+        &IID_IWICImagingFactory2, (void **)&factory2);
+    if (FAILED(hr))
+    {
+        win_skip("IWICImagingFactory2 is not supported.\n");
+        return;
+    }
+
+    hr = IWICImagingFactory2_QueryInterface(factory2, &IID_IWICComponentFactory, (void **)&component_factory);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+    hr = IWICComponentFactory_QueryInterface(component_factory, &IID_IWICImagingFactory, (void **)&factory);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+    ok(factory == (IWICImagingFactory *)component_factory, "Unexpected factory pointer.\n");
+    IWICImagingFactory_Release(factory);
+
+    hr = IWICImagingFactory2_QueryInterface(factory2, &IID_IWICImagingFactory, (void **)&factory);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+    ok(factory == (IWICImagingFactory *)component_factory, "Unexpected factory pointer.\n");
+
+    IWICComponentFactory_Release(component_factory);
+    IWICImagingFactory2_Release(factory2);
+    IWICImagingFactory_Release(factory);
+}
+
 START_TEST(info)
 {
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
@@ -619,6 +676,7 @@ START_TEST(info)
     test_decoder_info();
     test_reader_info();
     test_pixelformat_info();
+    test_imagingfactory_interfaces();
 
     CoUninitialize();
 }

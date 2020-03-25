@@ -1488,11 +1488,11 @@ VOID
 typedef struct _DISPATCHER_CONTEXT
 {
     ULONG64 ControlPc;
-    PVOID ImageBase;
-    PVOID FunctionEntry;
-    PVOID EstablisherFrame;
+    ULONG64 ImageBase;
+    PRUNTIME_FUNCTION FunctionEntry;
+    ULONG64 EstablisherFrame;
     ULONG64 TargetIp;
-    PVOID ContextRecord;
+    struct _CONTEXT *ContextRecord;
     PEXCEPTION_ROUTINE LanguageHandler;
     PVOID HandlerData;
     PUNWIND_HISTORY_TABLE HistoryTable;
@@ -2097,7 +2097,7 @@ typedef struct _CONTEXT
 #else
 #error "undefined processor type"
 #endif
-typedef CONTEXT *PCONTEXT,*LPCONTEXT;
+typedef CONTEXT *PCONTEXT;
 
 #define EXCEPTION_MAXIMUM_PARAMETERS 15
 #define EXCEPTION_NONCONTINUABLE  0x01
@@ -2145,7 +2145,7 @@ typedef struct _EXCEPTION_RECORD64 {
 typedef struct _EXCEPTION_POINTERS {
   PEXCEPTION_RECORD ExceptionRecord;
   PCONTEXT ContextRecord;
-} EXCEPTION_POINTERS,*PEXCEPTION_POINTERS, *LPEXCEPTION_POINTERS;
+} EXCEPTION_POINTERS, *PEXCEPTION_POINTERS;
 
 typedef struct _SECURITY_ATTRIBUTES {
     DWORD nLength;
@@ -3882,15 +3882,6 @@ typedef enum _POWER_INFORMATION_LEVEL {
   PowerInformationLevelMaximum
 } POWER_INFORMATION_LEVEL;
 
-#if 1 /* (_WIN32_WINNT >= 0x0500) */
-typedef struct _SYSTEM_POWER_INFORMATION {
-    ULONG  MaxIdlenessAllowed;
-    ULONG  Idleness;
-    ULONG  TimeRemaining;
-    UCHAR  CoolingMode;
-} SYSTEM_POWER_INFORMATION,*PSYSTEM_POWER_INFORMATION;
-#endif
-
 #if (_WIN32_WINNT >= 0x0501)
 
 typedef enum _ACTIVATION_CONTEXT_INFO_CLASS {
@@ -4307,6 +4298,10 @@ typedef struct _TP_CALLBACK_ENVIRON_V1 {
   } u;
 } TP_CALLBACK_ENVIRON_V1, TP_CALLBACK_ENVIRON, *PTP_CALLBACK_ENVIRON;
 #endif /* (_WIN32_WINNT >= _WIN32_WINNT_WIN7) */
+
+#ifdef __WINESRC__
+# define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#endif
 
 #ifdef _MSC_VER
 #pragma warning(pop)

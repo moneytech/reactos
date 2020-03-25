@@ -1067,6 +1067,8 @@ static BOOL do_file_copyW( LPCWSTR source, LPCWSTR target, DWORD style,
     OFSTRUCT OfStruct;
     WCHAR TempPath[MAX_PATH];
     WCHAR TempFile[MAX_PATH];
+    LONG lRes;
+    DWORD dwLastError;
 #endif
 
     TRACE("copy %s to %s style 0x%x\n",debugstr_w(source),debugstr_w(target),style);
@@ -1078,17 +1080,27 @@ static BOOL do_file_copyW( LPCWSTR source, LPCWSTR target, DWORD style,
         ERR("GetTempPathW error\n");
         return FALSE;
     }
-    if (!GetTempFileNameW(TempPath, L"", 0, TempFile))
-    {
-        ERR("GetTempFileNameW(%s) error\n", debugstr_w(TempPath));
-        return FALSE;
-    }
 
     /* Try to open the source file */
     hSource = LZOpenFileW((LPWSTR)source, &OfStruct, OF_READ);
     if (hSource < 0)
     {
-        ERR("LZOpenFileW(1) error %d %s\n", (int)hSource, debugstr_w(source));
+        TRACE("LZOpenFileW(1) error %d %s\n", (int)hSource, debugstr_w(source));
+        return FALSE;
+    }
+
+    if (!GetTempFileNameW(TempPath, L"", 0, TempFile))
+    {
+        dwLastError = GetLastError();
+
+        ERR("GetTempFileNameW(%s) error\n", debugstr_w(TempPath));
+
+        /* Close the source handle */
+        LZClose(hSource);
+
+        /* Restore error condition triggered by GetTempFileNameW */
+        SetLastError(dwLastError);
+
         return FALSE;
     }
 
@@ -1096,21 +1108,41 @@ static BOOL do_file_copyW( LPCWSTR source, LPCWSTR target, DWORD style,
     hTemp = LZOpenFileW(TempFile, &OfStruct, OF_CREATE);
     if (hTemp < 0)
     {
-        DWORD dwLastError = GetLastError();
+        dwLastError = GetLastError();
 
         ERR("LZOpenFileW(2) error %d %s\n", (int)hTemp, debugstr_w(TempFile));
 
         /* Close the source handle */
         LZClose(hSource);
 
+        /* Delete temp file if an error is signaled */
+        DeleteFileW(TempFile);
+
         /* Restore error condition triggered by LZOpenFileW */
         SetLastError(dwLastError);
+
         return FALSE;
     }
 
-    LZCopy(hSource, hTemp);
+    lRes = LZCopy(hSource, hTemp);
+
+    dwLastError = GetLastError();
+
     LZClose(hSource);
     LZClose(hTemp);
+
+    if (lRes < 0)
+    {
+        ERR("LZCopy error %d (%s, %s)\n", (int)lRes, debugstr_w(source), debugstr_w(TempFile));
+
+        /* Delete temp file if copy was not successful */
+        DeleteFileW(TempFile);
+
+        /* Restore error condition triggered by LZCopy */
+        SetLastError(dwLastError);
+
+        return FALSE;
+    }
 #endif
 
     /* before copy processing */
@@ -1790,7 +1822,7 @@ UINT WINAPI SetupDefaultQueueCallbackW( PVOID context, UINT notification,
         TRACE( "end copy %s -> %s\n", debugstr_w(paths->Source), debugstr_w(paths->Target) );
         return 0;
     case SPFILENOTIFY_COPYERROR:
-        ERR( "copy error %d %s -> %s\n", paths->Win32Error,
+        TRACE( "copy error %d %s -> %s\n", paths->Win32Error,
              debugstr_w(paths->Source), debugstr_w(paths->Target) );
         return FILEOP_SKIP;
     case SPFILENOTIFY_NEEDMEDIA:

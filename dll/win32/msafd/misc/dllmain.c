@@ -5,6 +5,7 @@
  * PURPOSE:     DLL entry point
  * PROGRAMMERS: Casper S. Hornstrup (chorns@users.sourceforge.net)
  *              Alex Ionescu (alex@relsoft.net)
+ *              Pierre Schweitzer (pierre@reactos.org)
  * REVISIONS:
  *              CSH 01/09-2000 Created
  *              Alex 16/07/2004 - Complete Rewrite
@@ -75,17 +76,17 @@ WSPSocket(int AddressFamily,
     if (lpProtocolInfo && lpProtocolInfo->dwServiceFlags3 != 0 && lpProtocolInfo->dwServiceFlags4 != 0)
     {
         /* Duplpicating socket from different process */
-        if ((HANDLE)lpProtocolInfo->dwServiceFlags3 == INVALID_HANDLE_VALUE)
+        if (UlongToPtr(lpProtocolInfo->dwServiceFlags3) == INVALID_HANDLE_VALUE)
         {
             Status = WSAEINVAL;
             goto error;
         }
-        if ((HANDLE)lpProtocolInfo->dwServiceFlags4 == INVALID_HANDLE_VALUE)
+        if (UlongToPtr(lpProtocolInfo->dwServiceFlags4) == INVALID_HANDLE_VALUE)
         {
             Status = WSAEINVAL;
             goto error;
         }
-        SharedData = MapViewOfFile((HANDLE)lpProtocolInfo->dwServiceFlags3,
+        SharedData = MapViewOfFile(UlongToPtr(lpProtocolInfo->dwServiceFlags3),
                                    FILE_MAP_ALL_ACCESS,
                                    0,
                                    0,
@@ -183,8 +184,8 @@ WSPSocket(int AddressFamily,
     if (SharedData)
     {
         Socket->SharedData = SharedData;
-        Socket->SharedDataHandle = (HANDLE)lpProtocolInfo->dwServiceFlags3;
-        Sock = (HANDLE)lpProtocolInfo->dwServiceFlags4;
+        Socket->SharedDataHandle = UlongToHandle(lpProtocolInfo->dwServiceFlags3);
+        Sock = UlongToHandle(lpProtocolInfo->dwServiceFlags4);
         Socket->Handle = (SOCKET)lpProtocolInfo->dwServiceFlags4;
     }
     else
@@ -422,7 +423,7 @@ error:
     if( SharedData )
     {
         UnmapViewOfFile(SharedData);
-        NtClose((HANDLE)lpProtocolInfo->dwServiceFlags3);
+        NtClose(UlongToHandle(lpProtocolInfo->dwServiceFlags3));
     }
     else
     {
@@ -523,8 +524,8 @@ WSPDuplicateSocket(
     lpProtocolInfo->iAddressFamily = Socket->SharedData->AddressFamily;
     lpProtocolInfo->iProtocol = Socket->SharedData->Protocol;
     lpProtocolInfo->iSocketType = Socket->SharedData->SocketType;
-    lpProtocolInfo->dwServiceFlags3 = (DWORD)hDuplicatedSharedData;
-    lpProtocolInfo->dwServiceFlags4 = (DWORD)hDuplicatedHandle;
+    lpProtocolInfo->dwServiceFlags3 = HandleToUlong(hDuplicatedSharedData);
+    lpProtocolInfo->dwServiceFlags4 = HandleToUlong(hDuplicatedHandle);
 
     if( lpErrno )
         *lpErrno = NO_ERROR;
@@ -903,7 +904,7 @@ WSPBind(SOCKET Handle,
 
     /* Set up Address in TDI Format */
     BindData->Address.TAAddressCount = 1;
-    BindData->Address.Address[0].AddressLength = SocketAddressLength - sizeof(SocketAddress->sa_family);
+    BindData->Address.Address[0].AddressLength = (USHORT)(SocketAddressLength - sizeof(SocketAddress->sa_family));
     BindData->Address.Address[0].AddressType = SocketAddress->sa_family;
     RtlCopyMemory (BindData->Address.Address[0].Address,
                    SocketAddress->sa_data,
@@ -1427,14 +1428,16 @@ GetCurrentTimeInSeconds(VOID)
     return (DWORD)((Time.ll - u1970.ll) / 10000000ULL);
 }
 
+_Must_inspect_result_
 SOCKET
 WSPAPI
-WSPAccept(SOCKET Handle,
-          struct sockaddr *SocketAddress,
-          int *SocketAddressLength,
-          LPCONDITIONPROC lpfnCondition,
-          DWORD dwCallbackData,
-          LPINT lpErrno)
+WSPAccept(
+    _In_ SOCKET Handle,
+    _Out_writes_bytes_to_opt_(*addrlen, *addrlen) struct sockaddr FAR *SocketAddress,
+    _Inout_opt_ LPINT SocketAddressLength,
+    _In_opt_ LPCONDITIONPROC lpfnCondition,
+    _In_opt_ DWORD_PTR dwCallbackData,
+    _Out_ LPINT lpErrno)
 {
     IO_STATUS_BLOCK             IOSB;
     PAFD_RECEIVED_ACCEPT_DATA   ListenReceiveData;
@@ -2464,7 +2467,61 @@ WSPIoctl(IN  SOCKET Handle,
             Ret = NO_ERROR;
             break;
         case SIO_GET_EXTENSION_FUNCTION_POINTER:
-            Errno = WSAEINVAL;
+            if (cbOutBuffer == 0)
+            {
+                cbRet = sizeof(PVOID);
+                Errno = WSAEFAULT;
+                break;
+            }
+
+            if (cbInBuffer < sizeof(GUID) ||
+                cbOutBuffer < sizeof(PVOID))
+            {
+                Errno = WSAEINVAL;
+                break;
+            }
+
+            {
+                GUID AcceptExGUID = WSAID_ACCEPTEX;
+                GUID ConnectExGUID = WSAID_CONNECTEX;
+                GUID DisconnectExGUID = WSAID_DISCONNECTEX;
+                GUID GetAcceptExSockaddrsGUID = WSAID_GETACCEPTEXSOCKADDRS;
+
+                if (IsEqualGUID(&AcceptExGUID, lpvInBuffer))
+                {
+                    *((PVOID *)lpvOutBuffer) = WSPAcceptEx;
+                    cbRet = sizeof(PVOID);
+                    Errno = NO_ERROR;
+                    Ret = NO_ERROR;
+                }
+                else if (IsEqualGUID(&ConnectExGUID, lpvInBuffer))
+                {
+                    *((PVOID *)lpvOutBuffer) = WSPConnectEx;
+                    cbRet = sizeof(PVOID);
+                    Errno = NO_ERROR;
+                    Ret = NO_ERROR;
+                }
+                else if (IsEqualGUID(&DisconnectExGUID, lpvInBuffer))
+                {
+                    *((PVOID *)lpvOutBuffer) = WSPDisconnectEx;
+                    cbRet = sizeof(PVOID);
+                    Errno = NO_ERROR;
+                    Ret = NO_ERROR;
+                }
+                else if (IsEqualGUID(&GetAcceptExSockaddrsGUID, lpvInBuffer))
+                {
+                    *((PVOID *)lpvOutBuffer) = WSPGetAcceptExSockaddrs;
+                    cbRet = sizeof(PVOID);
+                    Errno = NO_ERROR;
+                    Ret = NO_ERROR;
+                }
+                else
+                {
+                    ERR("Querying unknown extension function: %x\n", ((GUID*)lpvInBuffer)->Data1);
+                    Errno = WSAEOPNOTSUPP;
+                }
+            }
+
             break;
         case SIO_ADDRESS_LIST_QUERY:
             if (IS_INTRESOURCE(lpvOutBuffer) || cbOutBuffer == 0)
@@ -2581,12 +2638,12 @@ WSPGetSockOpt(IN SOCKET Handle,
 
                 case SO_RCVBUF:
                     Buffer = &Socket->SharedData->SizeOfRecvBuffer;
-                    BufferSize = sizeof(INT);
+                    BufferSize = sizeof(ULONG);
                     break;
 
                 case SO_SNDBUF:
                     Buffer = &Socket->SharedData->SizeOfSendBuffer;
-                    BufferSize = sizeof(INT);
+                    BufferSize = sizeof(ULONG);
                     break;
 
                 case SO_ACCEPTCONN:
@@ -2803,14 +2860,51 @@ WSPSetSockOpt(
               return NO_ERROR;
 
            case SO_SNDBUF:
-              if (optlen < sizeof(DWORD))
+              if (optlen < sizeof(ULONG))
               {
                   if (lpErrno) *lpErrno = WSAEFAULT;
                   return SOCKET_ERROR;
               }
 
-              /* TODO: The total per-socket buffer space reserved for sends */
-              ERR("Setting send buf to %x is not implemented yet\n", optval);
+              SetSocketInformation(Socket,
+                                   AFD_INFO_SEND_WINDOW_SIZE,
+                                   NULL,
+                                   (PULONG)optval,
+                                   NULL,
+                                   NULL,
+                                   NULL);
+              GetSocketInformation(Socket,
+                                   AFD_INFO_SEND_WINDOW_SIZE,
+                                   NULL,
+                                   &Socket->SharedData->SizeOfSendBuffer,
+                                   NULL,
+                                   NULL,
+                                   NULL);
+
+              return NO_ERROR;
+
+           case SO_RCVBUF:
+              if (optlen < sizeof(ULONG))
+              {
+                  if (lpErrno) *lpErrno = WSAEFAULT;
+                  return SOCKET_ERROR;
+              }
+
+              SetSocketInformation(Socket,
+                                   AFD_INFO_RECEIVE_WINDOW_SIZE,
+                                   NULL,
+                                   (PULONG)optval,
+                                   NULL,
+                                   NULL,
+                                   NULL);
+              GetSocketInformation(Socket,
+                                   AFD_INFO_RECEIVE_WINDOW_SIZE,
+                                   NULL,
+                                   &Socket->SharedData->SizeOfRecvBuffer,
+                                   NULL,
+                                   NULL,
+                                   NULL);
+
               return NO_ERROR;
 
            case SO_ERROR:
@@ -2885,14 +2979,15 @@ SendToHelper:
  * RETURNS:
  *     Status of operation
  */
-INT
+_Must_inspect_result_
+int
 WSPAPI
-WSPStartup(IN  WORD wVersionRequested,
-           OUT LPWSPDATA lpWSPData,
-           IN  LPWSAPROTOCOL_INFOW lpProtocolInfo,
-           IN  WSPUPCALLTABLE UpcallTable,
-           OUT LPWSPPROC_TABLE lpProcTable)
-
+WSPStartup(
+    _In_ WORD wVersionRequested,
+    _In_ LPWSPDATA lpWSPData,
+    _In_ LPWSAPROTOCOL_INFOW lpProtocolInfo,
+    _In_ WSPUPCALLTABLE UpcallTable,
+    _Out_ LPWSPPROC_TABLE lpProcTable)
 {
     NTSTATUS Status;
 
@@ -2959,7 +3054,7 @@ WSPAddressToString(IN LPSOCKADDR lpsaAddress,
                    IN OUT LPDWORD lpdwAddressStringLength,
                    OUT LPINT lpErrno)
 {
-    DWORD size;
+    SIZE_T size;
     WCHAR buffer[54]; /* 32 digits + 7':' + '[' + '%" + 5 digits + ']:' + 5 digits + '\0' */
     WCHAR *p;
 
@@ -3203,6 +3298,7 @@ GetSocketInformation(PSOCKET_INFORMATION Socket,
         if ((Socket->SharedData->CreateFlags & SO_SYNCHRONOUS_NONALERT) != 0)
         {
             TRACE("Opened without flag WSA_FLAG_OVERLAPPED. Do nothing.\n");
+            NtClose( SockEvent );
             return 0;
         }
         if (CompletionRoutine == NULL)
@@ -3220,6 +3316,7 @@ GetSocketInformation(PSOCKET_INFORMATION Socket,
             if (!APCContext)
             {
                 ERR("Not enough memory for APC Context\n");
+                NtClose( SockEvent );
                 return WSAEFAULT;
             }
             APCContext->lpCompletionRoutine = CompletionRoutine;
@@ -3251,6 +3348,8 @@ GetSocketInformation(PSOCKET_INFORMATION Socket,
         Status = IOSB->Status;
     }
 
+    NtClose( SockEvent );
+
     TRACE("Status %x Information %d\n", Status, IOSB->Information);
 
     if (Status == STATUS_PENDING)
@@ -3275,8 +3374,6 @@ GetSocketInformation(PSOCKET_INFORMATION Socket,
     {
         *Boolean = InfoData.Information.Boolean;
     }
-
-    NtClose( SockEvent );
 
     return NO_ERROR;
 
@@ -3342,6 +3439,7 @@ SetSocketInformation(PSOCKET_INFORMATION Socket,
         if ((Socket->SharedData->CreateFlags & SO_SYNCHRONOUS_NONALERT) != 0)
         {
             TRACE("Opened without flag WSA_FLAG_OVERLAPPED. Do nothing.\n");
+            NtClose( SockEvent );
             return 0;
         }
         if (CompletionRoutine == NULL)
@@ -3359,6 +3457,7 @@ SetSocketInformation(PSOCKET_INFORMATION Socket,
             if (!APCContext)
             {
                 ERR("Not enough memory for APC Context\n");
+                NtClose( SockEvent );
                 return WSAEFAULT;
             }
             APCContext->lpCompletionRoutine = CompletionRoutine;

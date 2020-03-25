@@ -29,6 +29,8 @@
       ((_devObj)->DeviceExtension != NULL))
 
 extern PDEVICE_OBJECT CommsDeviceObject;
+extern LIST_ENTRY FilterList;
+extern ERESOURCE FilterListLock;
 
 
 DRIVER_INITIALIZE DriverEntry;
@@ -2003,7 +2005,7 @@ FltpDetachFromFileSystemDevice(_In_ PDEVICE_OBJECT DeviceObject)
         NextDevice = IoGetLowerDeviceObject(AttachedDevice);
 
         /* Remove the reference we added */
-        Count = ObfDereferenceObject(AttachedDevice);
+        Count = ObDereferenceObject(AttachedDevice);
 
         /* Bail if this is the last one */
         if (NextDevice == NULL) return Count;
@@ -2026,7 +2028,7 @@ FltpDetachFromFileSystemDevice(_In_ PDEVICE_OBJECT DeviceObject)
     IoDeleteDevice(AttachedDevice);
 
     /* Remove the reference we added so the delete can complete */
-    return ObfDereferenceObject(AttachedDevice);
+    return ObDereferenceObject(AttachedDevice);
 }
 
 DRIVER_FS_NOTIFICATION FltpFsNotification;
@@ -2129,6 +2131,9 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
     FLT_ASSERT(Status != STATUS_DEVICE_ALREADY_ATTACHED); // Windows checks for this, I'm not sure how it can happen. Needs investigation??
     if (!NT_SUCCESS(Status))  goto Cleanup;
 
+    InitializeListHead(&FilterList);
+    ExInitializeResourceLite(&FilterListLock);
+
     /* IoRegisterFsRegistrationChange isn't notified about the raw  file systems, so we attach to them manually */
     RtlInitUnicodeString(&ObjectName, L"\\Device\\RawDisk");
     Status = IoGetDeviceObjectPointer(&ObjectName,
@@ -2138,7 +2143,7 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
     if (NT_SUCCESS(Status))
     {
         FltpFsNotification(RawDeviceObject, TRUE);
-        ObfDereferenceObject(RawFileObject);
+        ObDereferenceObject(RawFileObject);
     }
 
     RtlInitUnicodeString(&ObjectName, L"\\Device\\RawCdRom");
@@ -2149,7 +2154,7 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
     if (NT_SUCCESS(Status))
     {
         FltpFsNotification(RawDeviceObject, TRUE);
-        ObfDereferenceObject(RawFileObject);
+        ObDereferenceObject(RawFileObject);
     }
 
     /* We're done, clear the initializing flag */

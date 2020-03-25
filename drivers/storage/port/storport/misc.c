@@ -102,7 +102,6 @@ GetResourceListSize(
     PCM_RESOURCE_LIST ResourceList)
 {
     PCM_FULL_RESOURCE_DESCRIPTOR Descriptor;
-    INT i;
     ULONG Size;
 
     DPRINT1("GetResourceListSize(%p)\n", ResourceList);
@@ -117,20 +116,12 @@ GetResourceListSize(
     DPRINT1("ResourceList->Count: %lu\n", ResourceList->Count);
 
     Descriptor = &ResourceList->List[0];
-    for (i = 0; i < ResourceList->Count; i++)
-    {
-        /* Process resources in CM_FULL_RESOURCE_DESCRIPTOR block number ix. */
 
-        DPRINT1("PartialResourceList->Count: %lu\n", Descriptor->PartialResourceList.Count);
+    DPRINT1("PartialResourceList->Count: %lu\n", Descriptor->PartialResourceList.Count);
 
-        /* Add the size of the current full descriptor */
-        Size += sizeof(CM_FULL_RESOURCE_DESCRIPTOR) + 
-                (Descriptor->PartialResourceList.Count - 1) * sizeof(CM_PARTIAL_RESOURCE_DESCRIPTOR);
-
-        /* Advance to next CM_FULL_RESOURCE_DESCRIPTOR block in memory. */
-        Descriptor = (PCM_FULL_RESOURCE_DESCRIPTOR)(Descriptor->PartialResourceList.PartialDescriptors + 
-                                                    Descriptor->PartialResourceList.Count);
-    }
+    /* Add the size of the partial descriptors */
+    if (Descriptor->PartialResourceList.Count > 1)
+        Size += (Descriptor->PartialResourceList.Count - 1) * sizeof(CM_PARTIAL_RESOURCE_DESCRIPTOR);
 
     DPRINT1("Size: 0x%lx (%u)\n", Size, Size);
     return Size;
@@ -369,18 +360,5 @@ AllocateAddressMapping(
 
     return STATUS_SUCCESS;
 }
-
-#if defined(_M_AMD64)
-/* KeQuerySystemTime is an inline function, 
-   so we cannot forward the export to ntoskrnl */
-STORPORT_API
-VOID
-NTAPI
-StorPortQuerySystemTime(
-    _Out_ PLARGE_INTEGER CurrentTime)
-{
-    KeQuerySystemTime(CurrentTime);
-}
-#endif /* defined(_M_AMD64) */
 
 /* EOF */

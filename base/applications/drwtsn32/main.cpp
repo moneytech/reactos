@@ -253,7 +253,7 @@ HRESULT WriteMinidump(LPCWSTR LogFilePath, DumpData& data)
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR cmdLine, INT)
 {
     int argc;
-    WCHAR **argv = CommandLineToArgvW(cmdLine, &argc);
+    WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
 
     DWORD pid = 0;
     WCHAR Filename[50];
@@ -285,7 +285,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR cmdLine, INT)
         {
             if (n + 1 < argc)
             {
-                data.Event = (HANDLE)wcstoul(argv[n+1], NULL, 10);
+                data.Event = (HANDLE)(ULONG_PTR)_wcstoui64(argv[n+1], NULL, 10);
                 n++;
             }
         }

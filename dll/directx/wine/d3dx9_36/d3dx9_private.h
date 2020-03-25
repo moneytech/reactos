@@ -24,13 +24,13 @@
 
 #define NONAMELESSUNION
 #include "wine/debug.h"
+#include "wine/heap.h"
+#include "wine/rbtree.h"
 
 #define COBJMACROS
 #include "d3dx9.h"
 
 #define ULONG64_MAX (~(ULONG64)0)
-
-#define ARRAY_SIZE(array) (sizeof(array)/sizeof(*array))
 
 struct vec4
 {
@@ -66,6 +66,14 @@ struct pixel_format_desc {
     void (*from_rgba)(const struct vec4 *src, struct vec4 *dst);
     void (*to_rgba)(const struct vec4 *src, struct vec4 *dst, const PALETTEENTRY *palette);
 };
+
+struct d3dx_include_from_file
+{
+    ID3DXInclude ID3DXInclude_iface;
+};
+
+extern CRITICAL_SECTION from_file_mutex DECLSPEC_HIDDEN;
+extern const struct ID3DXIncludeVtbl d3dx_include_from_file_vtbl DECLSPEC_HIDDEN;
 
 static inline BOOL is_conversion_from_supported(const struct pixel_format_desc *format)
 {
@@ -113,6 +121,10 @@ HRESULT load_volume_from_dds(IDirect3DVolume9 *dst_volume, const PALETTEENTRY *d
     const D3DXIMAGE_INFO *src_info) DECLSPEC_HIDDEN;
 HRESULT load_volume_texture_from_dds(IDirect3DVolumeTexture9 *volume_texture, const void *src_data,
     const PALETTEENTRY *palette, DWORD filter, DWORD color_key, const D3DXIMAGE_INFO *src_info) DECLSPEC_HIDDEN;
+HRESULT lock_surface(IDirect3DSurface9 *surface, D3DLOCKED_RECT *lock,
+        IDirect3DSurface9 **temp_surface, BOOL write) DECLSPEC_HIDDEN;
+HRESULT unlock_surface(IDirect3DSurface9 *surface, D3DLOCKED_RECT *lock,
+        IDirect3DSurface9 *temp_surface, BOOL update) DECLSPEC_HIDDEN;
 HRESULT save_dds_texture_to_memory(ID3DXBuffer **dst_buffer, IDirect3DBaseTexture9 *src_texture,
     const PALETTEENTRY *src_palette) DECLSPEC_HIDDEN;
 
@@ -280,6 +292,13 @@ struct d3dx_param_eval
     ULONG64 *version_counter;
 };
 
+struct param_rb_entry
+{
+    struct wine_rb_entry entry;
+    char *full_name;
+    struct d3dx_parameter *param;
+};
+
 struct d3dx_shared_data;
 struct d3dx_top_level_parameter;
 
@@ -302,6 +321,9 @@ struct d3dx_parameter
 
     struct d3dx_parameter *members;
     char *semantic;
+
+    char *full_name;
+    struct wine_rb_entry rb_entry;
 };
 
 struct d3dx_top_level_parameter

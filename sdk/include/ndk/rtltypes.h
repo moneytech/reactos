@@ -310,7 +310,7 @@ C_ASSERT(HEAP_CREATE_VALID_MASK == 0x0007F0FF);
 //
 // Activation Contexts
 //
-#define INVALID_ACTIVATION_CONTEXT                          (PVOID)0xFFFFFFFF
+#define INVALID_ACTIVATION_CONTEXT                          ((PVOID)(LONG_PTR)-1)
 
 //
 // C++ CONST casting
@@ -1211,8 +1211,21 @@ typedef struct _RTL_DEBUG_INFORMATION
 } RTL_DEBUG_INFORMATION, *PRTL_DEBUG_INFORMATION;
 
 //
+// Fiber local storage data
+//
+#define RTL_FLS_MAXIMUM_AVAILABLE 128
+typedef struct _RTL_FLS_DATA
+{
+    LIST_ENTRY ListEntry;
+    PVOID Data[RTL_FLS_MAXIMUM_AVAILABLE];
+} RTL_FLS_DATA, *PRTL_FLS_DATA;
+
+
+//
 // Unload Event Trace Structure for RtlGetUnloadEventTrace
 //
+#define RTL_UNLOAD_EVENT_TRACE_NUMBER 64
+
 typedef struct _RTL_UNLOAD_EVENT_TRACE
 {
     PVOID BaseAddress;
@@ -1662,38 +1675,19 @@ typedef struct _RTL_ATOM_TABLE
     PRTL_ATOM_TABLE_ENTRY Buckets[1];
 } RTL_ATOM_TABLE, *PRTL_ATOM_TABLE;
 
-#ifndef _WINBASE_
 //
-// System Time and Timezone Structures
+// Timezone Information
 //
-typedef struct _SYSTEMTIME
-{
-    USHORT wYear;
-    USHORT wMonth;
-    USHORT wDayOfWeek;
-    USHORT wDay;
-    USHORT wHour;
-    USHORT wMinute;
-    USHORT wSecond;
-    USHORT wMilliseconds;
-} SYSTEMTIME, *PSYSTEMTIME, *LPSYSTEMTIME;
-
-typedef struct _TIME_ZONE_INFORMATION
+typedef struct _RTL_TIME_ZONE_INFORMATION
 {
     LONG Bias;
     WCHAR StandardName[32];
-    SYSTEMTIME StandardDate;
+    TIME_FIELDS StandardDate;
     LONG StandardBias;
     WCHAR DaylightName[32];
-    SYSTEMTIME DaylightDate;
+    TIME_FIELDS DaylightDate;
     LONG DaylightBias;
-} TIME_ZONE_INFORMATION, *PTIME_ZONE_INFORMATION, *LPTIME_ZONE_INFORMATION;
-#endif /* !_WINBASE_ */
-
-//
-// Native version of Timezone Structure
-//
-typedef LPTIME_ZONE_INFORMATION PRTL_TIME_ZONE_INFORMATION;
+} RTL_TIME_ZONE_INFORMATION, *PRTL_TIME_ZONE_INFORMATION;
 
 //
 // Hotpatch Header

@@ -4,13 +4,14 @@ add_subdirectory(redirptest)
 add_message_headers(ANSI FormatMessage.mc)
 
 list(APPEND SOURCE
-    Console.c
+    ConsoleCP.c
     CreateProcess.c
     DefaultActCtx.c
     DeviceIoControl.c
     dosdev.c
     FindActCtxSectionStringW.c
     FindFiles.c
+    FLS.c
     FormatMessage.c
     GetComputerNameEx.c
     GetCurrentDirectory.c
@@ -19,15 +20,18 @@ list(APPEND SOURCE
     GetVolumeInformation.c
     interlck.c
     IsDBCSLeadByteEx.c
+    JapaneseCalendar.c
     LoadLibraryExW.c
     lstrcpynW.c
     lstrlen.c
     Mailslot.c
     MultiByteToWideChar.c
     PrivMoveFileIdentityW.c
+    SetComputerNameExW.c
     SetConsoleWindowInfo.c
     SetCurrentDirectory.c
     SetUnhandledExceptionFilter.c
+    SystemFirmware.c
     TerminateProcess.c
     TunnelCache.c
     WideCharToMultiByte.c

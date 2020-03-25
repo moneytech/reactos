@@ -17,6 +17,10 @@
 WINE_DEFAULT_DEBUG_CHANNEL(advapi);
 
 static BOOL ParseStringSidToSid(LPCWSTR StringSid, PSID pSid, LPDWORD cBytes);
+#ifdef __REACTOS__
+VOID WINAPI QuerySecurityAccessMask(SECURITY_INFORMATION,LPDWORD);
+VOID WINAPI SetSecurityAccessMask(SECURITY_INFORMATION,LPDWORD);
+#endif
 
 typedef struct _ACEFLAG
 {
@@ -759,6 +763,7 @@ PSID_IDENTIFIER_AUTHORITY
 WINAPI
 GetSidIdentifierAuthority(PSID pSid)
 {
+    SetLastError(ERROR_SUCCESS);
     return RtlIdentifierAuthoritySid(pSid);
 }
 
@@ -2227,7 +2232,7 @@ static DWORD ParseAclStringFlags(LPCWSTR* StringAcl)
     DWORD flags = 0;
     LPCWSTR szAcl = *StringAcl;
 
-    while (*szAcl != '(')
+    while (*szAcl && *szAcl != '(')
     {
         if (*szAcl == 'P')
         {
@@ -2538,7 +2543,7 @@ static BOOL ParseStringAclToAcl(LPCWSTR StringAcl, LPDWORD lpdwFlags,
         pAcl->AclRevision = ACL_REVISION;
         pAcl->Sbz1 = 0;
         pAcl->AclSize = length;
-        pAcl->AceCount = acecount++;
+        pAcl->AceCount = acecount;
         pAcl->Sbz2 = 0;
     }
     return TRUE;
@@ -2548,7 +2553,6 @@ lerr:
     WARN("Invalid ACE string format\n");
     return FALSE;
 }
-
 
 /******************************************************************************
  * ParseStringSecurityDescriptorToSecurityDescriptor
@@ -2565,7 +2569,7 @@ static BOOL ParseStringSecurityDescriptorToSecurityDescriptor(
     LPBYTE lpNext = NULL;
     DWORD len;
 
-    *cBytes = sizeof(SECURITY_DESCRIPTOR);
+    *cBytes = sizeof(SECURITY_DESCRIPTOR_RELATIVE);
 
     tok = heap_alloc( (lstrlenW(StringSecurityDescriptor) + 1) * sizeof(WCHAR));
 

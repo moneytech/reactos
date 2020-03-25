@@ -26,8 +26,8 @@
  *
  * See also: kd\kdio.c
  */
-static SIZE_T
-INIT_FUNCTION
+static INIT_FUNCTION
+SIZE_T
 KdpGetMemorySizeInMBs(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
     PLIST_ENTRY ListEntry;
@@ -62,12 +62,13 @@ KdpGetMemorySizeInMBs(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
         }
     }
 
-    return NumberOfPhysicalPages * PAGE_SIZE / 1024 / 1024;
+    /* Round size up. Assumed to better match actual physical RAM size */
+    return ALIGN_UP_BY(NumberOfPhysicalPages * PAGE_SIZE, 1024 * 1024) / (1024 * 1024);
 }
 
 /* See also: kd\kdio.c */
-static VOID
-INIT_FUNCTION
+static INIT_FUNCTION
+VOID
 KdpPrintBanner(IN SIZE_T MemSizeMBs)
 {
     DPRINT1("-----------------------------------------------------\n");
@@ -339,7 +340,7 @@ KdInitSystem(IN ULONG BootPhase,
     }
     else
     {
-        /* Called from a bugcheck or a re-enable. Save the Kernel Base */
+        /* Called from a bugcheck or a re-enable. Save the Kernel Base. */
         KdVersionBlock.KernBase = (ULONG64)(LONG_PTR)PsNtosImageBase;
 
         /* Unconditionally enable KD */

@@ -29,10 +29,6 @@
             ( (ULONG)_x2 <<  8 ) |     \
               (ULONG)_x1         )
 
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
-#endif
-
 enum usp10_script
 {
     Script_Undefined = 0x00,
@@ -154,19 +150,32 @@ typedef struct {
     WORD *lookups;
 } LoadedFeature;
 
-typedef struct {
-    OPENTYPE_TAG tag;
-    const void *gsub_table;
-    const void *gpos_table;
-    BOOL features_initialized;
-    INT feature_count;
-    LoadedFeature *features;
-} LoadedLanguage;
+enum usp10_language_table
+{
+    USP10_LANGUAGE_TABLE_GSUB = 0,
+    USP10_LANGUAGE_TABLE_GPOS,
+    USP10_LANGUAGE_TABLE_COUNT
+};
 
 typedef struct {
     OPENTYPE_TAG tag;
-    const void *gsub_table;
-    const void *gpos_table;
+    const void *table[USP10_LANGUAGE_TABLE_COUNT];
+    BOOL features_initialized;
+    LoadedFeature *features;
+    SIZE_T features_size;
+    SIZE_T feature_count;
+} LoadedLanguage;
+
+enum usp10_script_table
+{
+    USP10_SCRIPT_TABLE_GSUB = 0,
+    USP10_SCRIPT_TABLE_GPOS,
+    USP10_SCRIPT_TABLE_COUNT
+};
+
+typedef struct {
+    OPENTYPE_TAG tag;
+    const void *table[USP10_SCRIPT_TABLE_COUNT];
     LoadedLanguage default_language;
     BOOL languages_initialized;
     LoadedLanguage *languages;

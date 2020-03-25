@@ -183,6 +183,19 @@ public:
         SendMessage(LVM_SETITEMSTATE, i, reinterpret_cast<LPARAM>(&item));
     }
 
+    BOOL SetItemText(int i, int subItem, LPCWSTR text)
+    {
+        LVITEMW item;
+        item.iSubItem = subItem;
+        item.pszText = (LPWSTR)text;
+        return SendMessage(LVM_SETITEMTEXT, i, (LPARAM)&item);
+    }
+
+    void SetCheckState(int i, BOOL check)
+    {
+        SetItemState(i, INDEXTOSTATEIMAGEMASK((check)?2:1), LVIS_STATEIMAGEMASK);
+    }
+
     int HitTest(LV_HITTESTINFO * phtInfo)
     {
         return (int)SendMessage(LVM_HITTEST, 0, reinterpret_cast<LPARAM>(phtInfo));
@@ -224,6 +237,12 @@ public:
     {
         return (BOOL)SendMessage(LVM_SETITEMPOSITION, nItem, MAKELPARAM(pPoint->x, pPoint->y));
     }
+
+    BOOL Arrange(UINT nCode)
+    {
+        return (BOOL)SendMessage(LVM_ARRANGE, nCode, 0);
+    }
+
 };
 
 template<typename TItemData = DWORD_PTR>
@@ -274,7 +293,7 @@ public: // Configuration methods
 
     DWORD SetTooltip(HWND hWndTooltip)
     {
-        return SendMessageW(TB_SETTOOLTIPS, hWndTooltip, 0);
+        return SendMessageW(TB_SETTOOLTIPS, reinterpret_cast<WPARAM>(hWndTooltip), 0);
     }
 
     INT GetHotItem()
@@ -285,6 +304,11 @@ public: // Configuration methods
     DWORD SetHotItem(INT item)
     {
         return SendMessageW(TB_SETHOTITEM, item);
+    }
+
+    DWORD SetDrawTextFlags(DWORD useBits, DWORD bitState)
+    {
+        return SendMessageW(TB_SETDRAWTEXTFLAGS, useBits, bitState);
     }
 
 public: // Button list management methods
@@ -395,9 +419,9 @@ public: // Layout management methods
     }
 
 public: // Image list management methods
-    DWORD SetImageList(HIMAGELIST himl)
+    HIMAGELIST SetImageList(HIMAGELIST himl)
     {
-        return SendMessageW(TB_SETIMAGELIST, 0, reinterpret_cast<LPARAM>(himl));
+        return (HIMAGELIST)SendMessageW(TB_SETIMAGELIST, 0, reinterpret_cast<LPARAM>(himl));
     }
 
 public: // Other methods

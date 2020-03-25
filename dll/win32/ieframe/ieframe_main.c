@@ -91,7 +91,7 @@ static void release_typelib(void)
     if(!typelib)
         return;
 
-    for(i=0; i < sizeof(typeinfos)/sizeof(*typeinfos); i++) {
+    for(i=0; i < ARRAY_SIZE(typeinfos); i++) {
         if(typeinfos[i])
             ITypeInfo_Release(typeinfos[i]);
     }
@@ -187,8 +187,6 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID lpv)
 
     switch(fdwReason)
     {
-    case DLL_WINE_PREATTACH:
-        return FALSE;  /* prefer native version */
     case DLL_PROCESS_ATTACH:
         ieframe_instance = hInstDLL;
         register_iewindow_class();

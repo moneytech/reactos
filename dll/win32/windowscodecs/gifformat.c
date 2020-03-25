@@ -801,7 +801,7 @@ static HRESULT WINAPI GifFrameDecode_CopyPixels(IWICBitmapFrameDecode *iface,
     const WICRect *prc, UINT cbStride, UINT cbBufferSize, BYTE *pbBuffer)
 {
     GifFrameDecode *This = impl_from_IWICBitmapFrameDecode(iface);
-    TRACE("(%p,%p,%u,%u,%p)\n", iface, prc, cbStride, cbBufferSize, pbBuffer);
+    TRACE("(%p,%s,%u,%u,%p)\n", iface, debug_wic_rect(prc), cbStride, cbBufferSize, pbBuffer);
 
     if (This->frame->ImageDesc.Interlace)
     {
@@ -1176,20 +1176,9 @@ static HRESULT WINAPI GifDecoder_GetContainerFormat(IWICBitmapDecoder *iface,
 static HRESULT WINAPI GifDecoder_GetDecoderInfo(IWICBitmapDecoder *iface,
     IWICBitmapDecoderInfo **ppIDecoderInfo)
 {
-    HRESULT hr;
-    IWICComponentInfo *compinfo;
-
     TRACE("(%p,%p)\n", iface, ppIDecoderInfo);
 
-    hr = CreateComponentInfo(&CLSID_WICGifDecoder, &compinfo);
-    if (FAILED(hr)) return hr;
-
-    hr = IWICComponentInfo_QueryInterface(compinfo, &IID_IWICBitmapDecoderInfo,
-        (void**)ppIDecoderInfo);
-
-    IWICComponentInfo_Release(compinfo);
-
-    return hr;
+    return get_decoder_info(&CLSID_WICGifDecoder, ppIDecoderInfo);
 }
 
 static HRESULT WINAPI GifDecoder_CopyPalette(IWICBitmapDecoder *iface, IWICPalette *palette)

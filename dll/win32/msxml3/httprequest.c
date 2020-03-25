@@ -397,7 +397,7 @@ static HRESULT WINAPI BindStatusCallback_GetBindInfo(IBindStatusCallback *iface,
     pbindinfo->dwBindVerb = This->request->verb;
     if (This->request->verb == BINDVERB_CUSTOM)
     {
-        pbindinfo->szCustomVerb = CoTaskMemAlloc(SysStringByteLen(This->request->custom));
+        pbindinfo->szCustomVerb = CoTaskMemAlloc(SysStringByteLen(This->request->custom)+sizeof(WCHAR));
         strcpyW(pbindinfo->szCustomVerb, This->request->custom);
     }
 
@@ -759,7 +759,7 @@ static HRESULT BindStatusCallback_create(httprequest* This, BindStatusCallback *
         case VT_ARRAY|VT_UI1:
         {
             sa = V_ARRAY(body);
-            if ((hr = SafeArrayAccessData(sa, (void **)&ptr)) != S_OK)
+            if ((hr = SafeArrayAccessData(sa, &ptr)) != S_OK)
             {
                 heap_free(bsc);
                 return hr;

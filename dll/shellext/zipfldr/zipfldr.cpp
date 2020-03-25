@@ -31,6 +31,7 @@ public:
 BEGIN_OBJECT_MAP(ObjectMap)
     OBJECT_ENTRY(CLSID_ZipFolderStorageHandler, CZipFolder)
     OBJECT_ENTRY(CLSID_ZipFolderContextMenu, CZipFolder)
+    OBJECT_ENTRY(CLSID_ZipFolderSendTo, CSendToZip)
 END_OBJECT_MAP()
 
 CZipFldrModule gModule;
@@ -109,9 +110,13 @@ BOOL WINAPI
 RouteTheCall(
     IN HWND hWndOwner,
     IN HINSTANCE hInstance,
-    IN LPWSTR lpNamedPipeName,
+    IN LPCSTR lpStringArg,
     IN INT Show)
 {
-    UNIMPLEMENTED;
-    return FALSE;
+    CStringW path = lpStringArg;
+    PathRemoveBlanksW(path.GetBuffer());
+    path.ReleaseBuffer();
+    path = L"\"" + path + L"\"";
+    ShellExecuteW(NULL, L"open", L"explorer.exe", path.GetString(), NULL, SW_SHOWNORMAL);
+    return TRUE;
 }

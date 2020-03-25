@@ -48,6 +48,9 @@ tmp = 07777777777777777777777;
 ok(typeof(tmp) === "number" && tmp > 0xffffffff, "tmp = " + tmp);
 tmp = 07777777779777777777777;
 ok(typeof(tmp) === "number" && tmp > 0xffffffff, "tmp = " + tmp);
+ok(0xffffffff === 4294967295, "0xffffffff = " + 0xffffffff);
+tmp = 0x10000000000000000000000000000000000000000000000000000000000000000;
+ok(tmp === Math.pow(2, 256), "0x1000...00 != 2^256");
 
 ok(1 !== 2, "1 !== 2 is false");
 ok(null !== undefined, "null !== undefined is false");
@@ -176,6 +179,9 @@ tmp = typeof((new Object()).doesnotexist);
 ok(tmp === "undefined", "typeof((new Object).doesnotexist = " + tmp);
 tmp = typeof(testObj.onlyDispID);
 ok(tmp === "unknown", "typeof(testObj.onlyDispID) = " + tmp);
+
+ok("\0\0x\0\0".length === 5, "\"\\0\\0x\\0\\0\".length = " + "\0\0x\0\0".length);
+ok("\0\0x\0\0" === String.fromCharCode(0) + "\0x\0" + String.fromCharCode(0), "\"\\0\\0x\\0\\0\" unexpected");
 
 ok(testFunc1(true, "test") === true, "testFunc1 not returned true");
 
@@ -477,6 +483,20 @@ ok(obj3.prop1 === 1, "obj3.prop1 is not 1");
 ok(obj3.prop2 === "boolean", "obj3.prop2 is not \"boolean\"");
 ok(obj3.constructor === Object, "unexpected obj3.constructor");
 
+if(invokeVersion >= 2) {
+    eval("tmp = {prop: 'value',}");
+    ok(tmp.prop === "value", "tmp.prop = " + tmp.prop);
+    eval("tmp = {prop: 'value',second:2,}");
+    ok(tmp.prop === "value", "tmp.prop = " + tmp.prop);
+}else {
+    try {
+        eval("tmp = {prop: 'value',}");
+    }catch(e) {
+        tmp = true;
+    }
+    ok(tmp === true, "exception not fired");
+}
+
 {
     var blockVar = 1;
     blockVar = 2;
@@ -631,6 +651,12 @@ ok(tmp === 0, "0 | NaN = " + tmp);
 tmp = 10;
 ok((tmp |= 0x10) === 26, "tmp(10) |= 0x10 !== 26");
 ok(getVT(tmp) === "VT_I4", "getVT(tmp |= 10) = " + getVT(tmp));
+
+tmp = (123 * Math.pow(2,32) + 2) | 0;
+ok(tmp === 2, "123*2^32+2 | 0 = " + tmp);
+
+tmp = (-123 * Math.pow(2,32) + 2) | 0;
+ok(tmp === 2, "123*2^32+2 | 0 = " + tmp);
 
 tmp = 3 & 5;
 ok(tmp === 1, "3 & 5 !== 1");
@@ -1137,6 +1163,27 @@ case 3:
     })();
     expect(ret, "ret");
     expect(x, "try,try2,finally2,finally,ret");
+
+    ret = (function() {
+        try {
+            return "try";
+            unreachable();
+        }catch(e) {
+            unreachable();
+        }finally {
+            new Object();
+            var tmp = (function() {
+                var s = new String();
+                try {
+                    s.length;
+                }finally {
+                    return 1;
+                }
+            })();
+        }
+        unreachable();
+    })();
+    expect(ret, "try");
 })();
 
 tmp = eval("1");
@@ -1479,7 +1526,7 @@ deleteTest = 1;
 delete deleteTest;
 try {
     tmp = deleteTest;
-    ok(false, "deleteTest not throwed exception?");
+    ok(false, "deleteTest did not throw an exception?");
 }catch(ex) {}
 
 (function() {
@@ -1787,6 +1834,8 @@ ok(tmp, "tmp = " + tmp);
     }
     ok(x === undefined, "x = " + x);
 })();
+
+var get, set;
 
 /* NoNewline rule parser tests */
 while(true) {

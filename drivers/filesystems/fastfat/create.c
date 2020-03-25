@@ -122,7 +122,7 @@ FindFile(
     DPRINT("FindFile: Path %wZ\n",&Parent->PathNameU);
 
     PathNameBufferLength = LONGNAME_MAX_LENGTH * sizeof(WCHAR);
-    PathNameBuffer = ExAllocatePoolWithTag(NonPagedPool, PathNameBufferLength + sizeof(WCHAR), TAG_VFAT);
+    PathNameBuffer = ExAllocatePoolWithTag(NonPagedPool, PathNameBufferLength + sizeof(WCHAR), TAG_NAME);
     if (!PathNameBuffer)
     {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -173,7 +173,7 @@ FindFile(
                 Status = STATUS_UNSUCCESSFUL;
             }
             vfatReleaseFCB(DeviceExt, rcFcb);
-            ExFreePool(PathNameBuffer);
+            ExFreePoolWithTag(PathNameBuffer, TAG_NAME);
             return Status;
         }
     }
@@ -183,7 +183,7 @@ FindFile(
     Status = RtlUpcaseUnicodeString(&FileToFindUpcase, FileToFindU, TRUE);
     if (!NT_SUCCESS(Status))
     {
-        ExFreePool(PathNameBuffer);
+        ExFreePoolWithTag(PathNameBuffer, TAG_NAME);
         return Status;
     }
 
@@ -251,7 +251,7 @@ FindFile(
                 CcUnpinData(Context);
             }
             RtlFreeUnicodeString(&FileToFindUpcase);
-            ExFreePool(PathNameBuffer);
+            ExFreePoolWithTag(PathNameBuffer, TAG_NAME);
             return STATUS_SUCCESS;
         }
         DirContext->DirIndex++;
@@ -263,7 +263,7 @@ FindFile(
     }
 
     RtlFreeUnicodeString(&FileToFindUpcase);
-    ExFreePool(PathNameBuffer);
+    ExFreePoolWithTag(PathNameBuffer, TAG_NAME);
     return Status;
 }
 
@@ -368,6 +368,44 @@ VfatOpenFile(
         // we cannot delete a '.', '..' or the root directory
         vfatReleaseFCB(DeviceExt, Fcb);
         return STATUS_CANNOT_DELETE;
+    }
+
+    /* If that one was marked for closing, remove it */
+    if (BooleanFlagOn(Fcb->Flags, FCB_DELAYED_CLOSE))
+    {
+        BOOLEAN ConcurrentDeletion;
+        PVFAT_CLOSE_CONTEXT CloseContext;
+
+        /* Get the context */
+        CloseContext = Fcb->CloseContext;
+        /* Is someone already taking over? */
+        if (CloseContext != NULL)
+        {
+            ConcurrentDeletion = FALSE;
+            /* Lock list */
+            ExAcquireFastMutex(&VfatGlobalData->CloseMutex);
+            /* Check whether it was already removed, if not, do it */
+            if (!IsListEmpty(&CloseContext->CloseListEntry))
+            {
+                RemoveEntryList(&CloseContext->CloseListEntry);
+                --VfatGlobalData->CloseCount;
+                ConcurrentDeletion = TRUE;
+            }
+            ExReleaseFastMutex(&VfatGlobalData->CloseMutex);
+
+            /* It's not delayed anymore! */
+            ClearFlag(Fcb->Flags, FCB_DELAYED_CLOSE);
+            /* Release the extra reference (would have been removed by IRP_MJ_CLOSE) */
+            vfatReleaseFCB(DeviceExt, Fcb);
+            Fcb->CloseContext = NULL;
+            /* If no concurrent deletion, free work item */
+            if (!ConcurrentDeletion)
+            {
+                ExFreeToPagedLookasideList(&VfatGlobalData->CloseContextLookasideList, CloseContext);
+            }
+        }
+
+        DPRINT("Reusing delayed close FCB for %wZ\n", &Fcb->PathNameU);
     }
 
     DPRINT("Attaching FCB to fileObject\n");
@@ -485,7 +523,7 @@ VfatCreateFile(
                                         Stack->Parameters.Create.ShareAccess,
                                         FileObject,
                                         &pFcb->FCBShareAccess,
-                                        FALSE);
+                                        TRUE);
             if (!NT_SUCCESS(Status))
             {
                 vfatAddToStat(DeviceExt, Fat.FailedCreates, 1);
@@ -778,6 +816,7 @@ VfatCreateFile(
                 if (PagingFileCreate)
                 {
                     pFcb->Flags |= FCB_IS_PAGE_FILE;
+                    SetFlag(DeviceExt->Flags, VCB_IS_SYS_OR_HAS_PAGE);
                 }
             }
             else
@@ -897,6 +936,7 @@ VfatCreateFile(
             else
             {
                 pFcb->Flags |= FCB_IS_PAGE_FILE;
+                SetFlag(DeviceExt->Flags, VCB_IS_SYS_OR_HAS_PAGE);
             }
         }
         else
@@ -949,7 +989,7 @@ VfatCreateFile(
                                                &pFcb->entry.Fat.UpdateTime);
                 }
 
-                VfatUpdateEntry(pFcb, vfatVolumeIsFatX(DeviceExt));
+                VfatUpdateEntry(DeviceExt, pFcb);
             }
 
             ExAcquireResourceExclusiveLite(&(pFcb->MainResource), TRUE);
@@ -1055,11 +1095,6 @@ VfatCreate(
         IrpContext->PriorityBoost = IO_DISK_INCREMENT;
 
         return STATUS_SUCCESS;
-    }
-
-    if (!BooleanFlagOn(IrpContext->Flags, IRPCONTEXT_CANWAIT))
-    {
-        return VfatMarkIrpContextForQueue(IrpContext);
     }
 
     IrpContext->Irp->IoStatus.Information = 0;

@@ -2,8 +2,6 @@
 #ifndef _WINE_COMDLG32_PRECOMP_H
 #define _WINE_COMDLG32_PRECOMP_H
 
-#include <wine/config.h>
-
 #include <stdio.h>
 
 #define WIN32_NO_STATUS
@@ -32,7 +30,7 @@
 #define NO_SHLWAPI_STREAM
 #include <shlwapi.h>
 
-#include <wine/unicode.h>
+#include <wine/heap.h>
 #include <wine/debug.h>
 
 #include "cdlg.h"

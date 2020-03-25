@@ -353,15 +353,20 @@ static GpStatus get_clip_hrgn(GpGraphics *graphics, HRGN *hrgn)
     GpRegion *rgn;
     GpMatrix transform;
     GpStatus stat;
+    BOOL identity;
 
     stat = get_graphics_transform(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceDevice, &transform);
+
+    if (stat == Ok)
+        stat = GdipIsMatrixIdentity(&transform, &identity);
 
     if (stat == Ok)
         stat = GdipCloneRegion(graphics->clip, &rgn);
 
     if (stat == Ok)
     {
-        stat = GdipTransformRegion(rgn, &transform);
+        if (!identity)
+            stat = GdipTransformRegion(rgn, &transform);
 
         if (stat == Ok)
             stat = GdipGetRegionHRgn(rgn, NULL, hrgn);
@@ -1151,8 +1156,9 @@ static BOOL brush_can_fill_path(GpBrush *brush, BOOL is_fill)
     }
 }
 
-static void brush_fill_path(GpGraphics *graphics, GpBrush* brush)
+static GpStatus brush_fill_path(GpGraphics *graphics, GpBrush *brush)
 {
+    GpStatus status = Ok;
     switch (brush->bt)
     {
     case BrushTypeSolidColor:
@@ -1165,12 +1171,22 @@ static void brush_fill_path(GpGraphics *graphics, GpBrush* brush)
             RECT rc;
             /* partially transparent fill */
 
-            SelectClipPath(graphics->hdc, RGN_AND);
+            if (!SelectClipPath(graphics->hdc, RGN_AND))
+            {
+                status = GenericError;
+                DeleteObject(bmp);
+                break;
+            }
             if (GetClipBox(graphics->hdc, &rc) != NULLREGION)
             {
                 HDC hdc = CreateCompatibleDC(NULL);
 
-                if (!hdc) break;
+                if (!hdc)
+                {
+                    status = OutOfMemory;
+                    DeleteObject(bmp);
+                    break;
+                }
 
                 SelectObject(hdc, bmp);
                 gdi_alpha_blend(graphics, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
@@ -1188,7 +1204,11 @@ static void brush_fill_path(GpGraphics *graphics, GpBrush* brush)
         HBRUSH gdibrush, old_brush;
 
         gdibrush = create_gdi_brush(brush);
-        if (!gdibrush) return;
+        if (!gdibrush)
+        {
+            status = OutOfMemory;
+            break;
+        }
 
         old_brush = SelectObject(graphics->hdc, gdibrush);
         FillPath(graphics->hdc);
@@ -1197,6 +1217,8 @@ static void brush_fill_path(GpGraphics *graphics, GpBrush* brush)
         break;
     }
     }
+
+    return status;
 }
 
 static BOOL brush_can_fill_pixels(GpBrush *brush)
@@ -1695,9 +1717,9 @@ static void draw_cap(GpGraphics *graphics, COLORREF color, GpLineCap cap, REAL s
             ptf[3].X = x2 - dbig;
             ptf[2].X = x2 + dsmall;
 
-            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, ptf, 3);
+            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, ptf, 4);
 
-            round_points(pt, ptf, 3);
+            round_points(pt, ptf, 4);
 
             Polygon(graphics->hdc, pt, 4);
 
@@ -1735,9 +1757,9 @@ static void draw_cap(GpGraphics *graphics, COLORREF color, GpLineCap cap, REAL s
             ptf[1].X = x2 + dx;
             ptf[1].Y = y2 + dy;
 
-            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, ptf, 3);
+            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, ptf, 2);
 
-            round_points(pt, ptf, 3);
+            round_points(pt, ptf, 2);
 
             Ellipse(graphics->hdc, pt[0].x, pt[0].y, pt[1].x, pt[1].y);
 
@@ -1781,9 +1803,9 @@ static void draw_cap(GpGraphics *graphics, COLORREF color, GpLineCap cap, REAL s
             ptf[3].X = x2 + dx;
             ptf[3].Y = y2 + dy;
 
-            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, ptf, 3);
+            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, ptf, 4);
 
-            round_points(pt, ptf, 3);
+            round_points(pt, ptf, 4);
 
             Pie(graphics->hdc, pt[0].x, pt[0].y, pt[1].x, pt[1].y, pt[2].x,
                 pt[2].y, pt[3].x, pt[3].y);
@@ -1792,6 +1814,13 @@ static void draw_cap(GpGraphics *graphics, COLORREF color, GpLineCap cap, REAL s
         case LineCapCustom:
             if(!custom)
                 break;
+
+            if (custom->type == CustomLineCapTypeAdjustableArrow)
+            {
+                GpAdjustableArrowCap *arrow = (GpAdjustableArrowCap *)custom;
+                if (arrow->cap.fill && arrow->height <= 0.0)
+                    break;
+            }
 
             count = custom->pathdata.Count;
             custptf = heap_alloc_zero(count * sizeof(PointF));
@@ -1810,9 +1839,9 @@ static void draw_cap(GpGraphics *graphics, COLORREF color, GpLineCap cap, REAL s
             GdipTranslateMatrix(&matrix, x2, y2, MatrixOrderAppend);
             GdipTransformMatrixPoints(&matrix, custptf, count);
 
-            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, ptf, 3);
+            gdip_transform_points(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, custptf, count);
 
-            round_points(pt, ptf, 3);
+            round_points(custpt, custptf, count);
 
             for(i = 0; i < count; i++)
                 tp[i] = convert_path_point_type(custom->pathdata.Types[i]);
@@ -4325,7 +4354,7 @@ static GpStatus GDI32_GdipFillPath(GpGraphics *graphics, GpBrush *brush, GpPath 
     if(retval == Ok)
     {
         EndPath(graphics->hdc);
-        brush_fill_path(graphics, brush);
+        retval = brush_fill_path(graphics, brush);
     }
 
     gdi_transform_release(graphics);
@@ -4370,6 +4399,9 @@ GpStatus WINGDIPAPI GdipFillPath(GpGraphics *graphics, GpBrush *brush, GpPath *p
 
     if(graphics->busy)
         return ObjectBusy;
+
+    if (!path->pathdata.Count)
+        return Ok;
 
     if (graphics->image && graphics->image->type == ImageTypeMetafile)
         return METAFILE_FillPath((GpMetafile*)graphics->image, brush, path);
@@ -4631,13 +4663,13 @@ static GpStatus GDI32_GdipFillRegion(GpGraphics* graphics, GpBrush* brush,
         Rectangle(graphics->hdc, rc.left, rc.top, rc.right, rc.bottom);
         EndPath(graphics->hdc);
 
-        brush_fill_path(graphics, brush);
+        status = brush_fill_path(graphics, brush);
     }
 
     RestoreDC(graphics->hdc, save_state);
 
 
-    return Ok;
+    return status;
 }
 
 static GpStatus SOFTWARE_GdipFillRegion(GpGraphics *graphics, GpBrush *brush,
@@ -5402,7 +5434,7 @@ GpStatus WINGDIPAPI GdipMeasureCharacterRanges(GpGraphics* graphics,
     RectF scaled_rect;
     REAL margin_x;
 
-    TRACE("(%p %s %d %p %s %p %d %p)\n", graphics, debugstr_w(string),
+    TRACE("(%p %s %d %p %s %p %d %p)\n", graphics, debugstr_wn(string, length),
             length, font, debugstr_rectf(layoutRect), stringFormat, regionCount, regions);
 
     if (!(graphics && string && font && layoutRect && stringFormat && regions))
@@ -6469,9 +6501,12 @@ GpStatus WINGDIPAPI GdipSetClipRect(GpGraphics *graphics, REAL x, REAL y,
     if (status == Ok)
     {
         GpMatrix world_to_device;
+        BOOL identity;
 
         get_graphics_transform(graphics, CoordinateSpaceDevice, CoordinateSpaceWorld, &world_to_device);
-        status = GdipTransformRegion(region, &world_to_device);
+        status = GdipIsMatrixIdentity(&world_to_device, &identity);
+        if (status == Ok && !identity)
+            status = GdipTransformRegion(region, &world_to_device);
         if (status == Ok)
             status = GdipCombineRegionRegion(graphics->clip, region, mode);
 
@@ -6520,9 +6555,12 @@ GpStatus WINGDIPAPI GdipSetClipRegion(GpGraphics *graphics, GpRegion *region,
     if (status == Ok)
     {
         GpMatrix world_to_device;
+        BOOL identity;
 
         get_graphics_transform(graphics, CoordinateSpaceDevice, CoordinateSpaceWorld, &world_to_device);
-        status = GdipTransformRegion(clip, &world_to_device);
+        status = GdipIsMatrixIdentity(&world_to_device, &identity);
+        if (status == Ok && !identity)
+            status = GdipTransformRegion(clip, &world_to_device);
         if (status == Ok)
             status = GdipCombineRegionRegion(graphics->clip, clip, mode);
 

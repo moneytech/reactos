@@ -68,10 +68,10 @@ UserGetWindowIcon(PDRAW_CONTEXT pcontext)
         SendMessageTimeout(pcontext->hWnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG, 1000, (PDWORD_PTR)&hIcon);
 
     if (!hIcon)
-        hIcon = (HICON)GetClassLong(pcontext->hWnd, GCL_HICONSM);
+        hIcon = (HICON)GetClassLongPtr(pcontext->hWnd, GCLP_HICONSM);
 
     if (!hIcon)
-        hIcon = (HICON)GetClassLong(pcontext->hWnd, GCL_HICON);
+        hIcon = (HICON)GetClassLongPtr(pcontext->hWnd, GCLP_HICON);
 
     // See also win32ss/user/ntuser/nonclient.c!NC_IconForWindow
     if (!hIcon && !(pcontext->wi.dwExStyle & WS_EX_DLGMODALFRAME))
@@ -230,7 +230,11 @@ void ThemeCalculateCaptionButtonsPos(HWND hWnd, HTHEME htheme)
         return;
 
     if (!htheme)
-        htheme = pwndData->hthemeWindow;
+    {
+        htheme = GetNCCaptionTheme(hWnd, style);
+        if (!htheme)
+            return;
+    }
 
     if(!GetWindowInfo(hWnd, &wi))
         return;

@@ -172,6 +172,9 @@ public:
         case 2: /* Compressed size */
         case 4: /* Size */
         {
+            if (isDir)
+                return SHSetStrRet(&psd->str, L"");
+
             ULONG64 Size = iColumn == 2 ? zipEntry->CompressedSize : zipEntry->UncompressedSize;
             if (!StrFormatByteSizeW(Size, Buffer, _countof(Buffer)))
                 return E_FAIL;
@@ -183,8 +186,11 @@ public:
             return SHSetStrRet(&psd->str, _AtlBaseModule.GetResourceInstance(), zipEntry->Password ? IDS_YES : IDS_NO);
         case 5: /* Ratio */
         {
+            if (isDir)
+                return SHSetStrRet(&psd->str, L"");
+
             int ratio = 0;
-            if (zipEntry->UncompressedSize && !isDir)
+            if (zipEntry->UncompressedSize)
                 ratio = 100 - (int)((zipEntry->CompressedSize*100)/zipEntry->UncompressedSize);
             StringCchPrintfW(Buffer, _countof(Buffer), L"%d%%", ratio);
             return SHSetStrRet(&psd->str, Buffer);
@@ -295,9 +301,14 @@ public:
 
             return hr;
         }
-        if (riid == IID_IExplorerCommandProvider)
+        else if (riid == IID_IExplorerCommandProvider)
         {
             return _CExplorerCommandProvider_CreateInstance(this, riid, ppvOut);
+        }
+        else if (riid == IID_IContextMenu)
+        {
+            // Folder context menu
+            return QueryInterface(riid, ppvOut);
         }
         if (UnknownIID != riid)
             DbgPrint("%s(%S) UNHANDLED\n", __FUNCTION__, guid2string(riid));
@@ -345,9 +356,33 @@ public:
         switch (uMsg)
         {
         case DFM_MERGECONTEXTMENU:
-            DPRINT1("FIXME: Add menu items for DFM_MERGECONTEXTMENU\n");
+        {
+            CComQIIDPtr<I_ID(IContextMenu)> spContextMenu(psf);
+            if (!spContextMenu)
+                return E_NOINTERFACE;
+
+            QCMINFO *pqcminfo = (QCMINFO *)lParam;
+            HRESULT hr = spContextMenu->QueryContextMenu(pqcminfo->hmenu,
+                                                 pqcminfo->indexMenu,
+                                                 pqcminfo->idCmdFirst,
+                                                 pqcminfo->idCmdLast,
+                                                 CMF_NORMAL);
+            if (FAILED_UNEXPECTEDLY(hr))
+                return hr;
+
+            pqcminfo->idCmdFirst += HRESULT_CODE(hr);
             return S_OK;
+        }
         case DFM_INVOKECOMMAND:
+        {
+            CComQIIDPtr<I_ID(IContextMenu)> spContextMenu(psf);
+            if (!spContextMenu)
+                return E_NOINTERFACE;
+
+            CMINVOKECOMMANDINFO ici = { sizeof(ici) };
+            ici.lpVerb = MAKEINTRESOURCEA(wParam);
+            return spContextMenu->InvokeCommand(&ici);
+        }
         case DFM_INVOKECOMMANDEX:
         case DFM_GETDEFSTATICID: // Required for Windows 7 to pick a default
             return S_FALSE;
@@ -373,6 +408,7 @@ public:
         }
         else if (riid == IID_IContextMenu && cidl >= 0)
         {
+            // Context menu of an object inside the zip
             const ZipPidlEntry* zipEntry = _ZipFromIL(*apidl);
             if (zipEntry)
             {
@@ -467,9 +503,9 @@ public:
     }
     STDMETHODIMP InvokeCommand(LPCMINVOKECOMMANDINFO pici)
     {
-        if (!pici || pici->cbSize != sizeof(*pici))
+        if (!pici || (pici->cbSize != sizeof(CMINVOKECOMMANDINFO) && pici->cbSize != sizeof(CMINVOKECOMMANDINFOEX)))
             return E_INVALIDARG;
-        
+
         if (pici->lpVerb == MAKEINTRESOURCEA(0) || (HIWORD(pici->lpVerb) && !strcmp(pici->lpVerb, EXTRACT_VERBA)))
         {
             BSTR ZipFile = m_ZipFile.AllocSysString();
@@ -487,20 +523,24 @@ public:
     }
     STDMETHODIMP QueryContextMenu(HMENU hmenu, UINT indexMenu, UINT idCmdFirst, UINT idCmdLast, UINT uFlags)
     {
-        int Entries = 0;
+        UINT idCmd = idCmdFirst;
 
-        CStringW menuText(MAKEINTRESOURCEW(IDS_MENUITEM));
+        if (!(uFlags & CMF_DEFAULTONLY))
+        {
+            CStringW menuText(MAKEINTRESOURCEW(IDS_MENUITEM));
 
-        InsertMenuW(hmenu, indexMenu++, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
-        Entries++;
-        InsertMenuW(hmenu, indexMenu++, MF_BYPOSITION | MF_STRING, idCmdFirst++, menuText);
-        Entries++;
+            if (indexMenu)
+            {
+                InsertMenuW(hmenu, indexMenu++, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
+            }
+            InsertMenuW(hmenu, indexMenu++, MF_BYPOSITION | MF_STRING, idCmd++, menuText);
+        }
 
-        return MAKE_HRESULT(SEVERITY_SUCCESS, 0, Entries);
+        return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, idCmd - idCmdFirst);
     }
 
     // *** IShellExtInit methods ***
-    STDMETHODIMP Initialize(LPCITEMIDLIST pidlFolder, LPDATAOBJECT pDataObj, HKEY hkeyProgID)
+    STDMETHODIMP Initialize(PCIDLIST_ABSOLUTE pidlFolder, LPDATAOBJECT pDataObj, HKEY hkeyProgID)
     {
         FORMATETC etc = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
         STGMEDIUM stg;
@@ -556,14 +596,14 @@ public:
     //STDMETHODIMP GetCurFile(LPOLESTR *ppszFileName);
 
     //// *** IPersistFolder2 methods ***
-    STDMETHODIMP GetCurFolder(LPITEMIDLIST * pidl)
+    STDMETHODIMP GetCurFolder(PIDLIST_ABSOLUTE * pidl)
     {
         *pidl = ILClone(m_CurDir);
         return S_OK;
     }
 
     // *** IPersistFolder methods ***
-    STDMETHODIMP Initialize(LPCITEMIDLIST pidl)
+    STDMETHODIMP Initialize(PCIDLIST_ABSOLUTE pidl)
     {
         WCHAR tmpPath[MAX_PATH];
 

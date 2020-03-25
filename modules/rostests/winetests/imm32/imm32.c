@@ -26,8 +26,6 @@
 #include "imm.h"
 #include "ddk/imm.h"
 
-#define NUMELEMS(array) (sizeof((array))/sizeof((array)[0]))
-
 static BOOL (WINAPI *pImmAssociateContextEx)(HWND,HIMC,DWORD);
 static BOOL (WINAPI *pImmIsUIMessageA)(HWND,UINT,WPARAM,LPARAM);
 static UINT (WINAPI *pSendInput) (UINT, INPUT*, size_t);
@@ -73,7 +71,7 @@ static LRESULT CALLBACK get_msg_filter(int nCode, WPARAM wParam, LPARAM lParam)
         MSG *msg = (MSG*)lParam;
 
         if ((msg->hwnd == msg_spy.hwnd || msg_spy.hwnd == NULL) &&
-            (msg_spy.i_msg < NUMELEMS(msg_spy.msgs)))
+            (msg_spy.i_msg < ARRAY_SIZE(msg_spy.msgs)))
         {
             msg_spy.msgs[msg_spy.i_msg].msg.hwnd    = msg->hwnd;
             msg_spy.msgs[msg_spy.i_msg].msg.message = msg->message;
@@ -94,7 +92,7 @@ static LRESULT CALLBACK call_wnd_proc_filter(int nCode, WPARAM wParam,
         CWPSTRUCT *cwp = (CWPSTRUCT*)lParam;
 
         if (((cwp->hwnd == msg_spy.hwnd || msg_spy.hwnd == NULL)) &&
-            (msg_spy.i_msg < NUMELEMS(msg_spy.msgs)))
+            (msg_spy.i_msg < ARRAY_SIZE(msg_spy.msgs)))
         {
             memcpy(&msg_spy.msgs[msg_spy.i_msg].msg, cwp, sizeof(msg_spy.msgs[0].msg));
             msg_spy.msgs[msg_spy.i_msg].post = FALSE;
@@ -126,7 +124,7 @@ static imm_msgs* msg_spy_find_next_msg(UINT message, UINT *start) {
 
     msg_spy_pump_msg_queue();
 
-    if (msg_spy.i_msg >= NUMELEMS(msg_spy.msgs))
+    if (msg_spy.i_msg >= ARRAY_SIZE(msg_spy.msgs))
         fprintf(stdout, "%s:%d: msg_spy: message buffer overflow!\n",
                 __FILE__, __LINE__);
 
@@ -450,6 +448,43 @@ static void test_ImmGetCompositionString(void)
         ok(len*sizeof(WCHAR)==wlen,"GCS_COMPATTR(W) not returning correct count\n");
         len = ImmGetCompositionStringA(imc, GCS_COMPATTR, NULL, 0);
         ok(len==alen,"GCS_COMPATTR(A) not returning correct count\n");
+
+        /* Get strings with exactly matching buffer sizes. */
+        memset(wstring, 0x1a, sizeof(wstring));
+        memset(cstring, 0x1a, sizeof(cstring));
+
+        len = ImmGetCompositionStringA(imc, GCS_COMPSTR, cstring, alen);
+        ok(len == alen, "Unexpected length %d.\n", len);
+        ok(cstring[alen] == 0x1a, "Unexpected buffer contents.\n");
+
+        len = ImmGetCompositionStringW(imc, GCS_COMPSTR, wstring, wlen);
+        ok(len == wlen, "Unexpected length %d.\n", len);
+        ok(wstring[wlen/sizeof(WCHAR)] == 0x1a1a, "Unexpected buffer contents.\n");
+
+        /* Get strings with exactly smaller buffer sizes. */
+        memset(wstring, 0x1a, sizeof(wstring));
+        memset(cstring, 0x1a, sizeof(cstring));
+
+        /* Returns 0 but still fills buffer. */
+        len = ImmGetCompositionStringA(imc, GCS_COMPSTR, cstring, alen - 1);
+        ok(!len, "Unexpected length %d.\n", len);
+        ok(cstring[0] == 'w', "Unexpected buffer contents %s.\n", cstring);
+
+        len = ImmGetCompositionStringW(imc, GCS_COMPSTR, wstring, wlen - 1);
+        ok(len == wlen - 1, "Unexpected length %d.\n", len);
+        ok(!memcmp(wstring, string, wlen - 1), "Unexpected buffer contents.\n");
+
+        /* Get the size of the required output buffer. */
+        memset(wstring, 0x1a, sizeof(wstring));
+        memset(cstring, 0x1a, sizeof(cstring));
+
+        len = ImmGetCompositionStringA(imc, GCS_COMPSTR, cstring, 0);
+        ok(len == alen, "Unexpected length %d.\n", len);
+        ok(cstring[0] == 0x1a, "Unexpected buffer contents %s.\n", cstring);
+
+        len = ImmGetCompositionStringW(imc, GCS_COMPSTR, wstring, 0);
+        ok(len == wlen, "Unexpected length %d.\n", len);
+        ok(wstring[0] == 0x1a1a, "Unexpected buffer contents.\n");
     }
     else
         win_skip("Composition string isn't available\n");
@@ -1067,8 +1102,8 @@ static BOOL CALLBACK is_ime_window_proc(HWND hWnd, LPARAM param)
     static const WCHAR imeW[] = {'I','M','E',0};
     WCHAR class_nameW[16];
     HWND *ime_window = (HWND *)param;
-    if (GetClassNameW(hWnd, class_nameW, sizeof(class_nameW)/sizeof(class_nameW[0])) &&
-        !lstrcmpW(class_nameW, imeW)) {
+    if (GetClassNameW(hWnd, class_nameW, ARRAY_SIZE(class_nameW)) && !lstrcmpW(class_nameW, imeW))
+    {
         *ime_window = hWnd;
         return FALSE;
     }
@@ -1229,7 +1264,7 @@ static void test_default_ime_window_creation(void)
         { FALSE, FALSE }
     };
 
-    for (i = 0; i < sizeof(testcases)/sizeof(testcases[0]); i++)
+    for (i = 0; i < ARRAY_SIZE(testcases); i++)
     {
         thread = CreateThread(NULL, 0, test_default_ime_window_cb, &testcases[i], 0, NULL);
         ok(thread != NULL, "CreateThread failed with error %u\n", GetLastError());

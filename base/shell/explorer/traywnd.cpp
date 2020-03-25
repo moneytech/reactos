@@ -2,6 +2,7 @@
  * ReactOS Explorer
  *
  * Copyright 2006 - 2007 Thomas Weidenmueller <w3seek@reactos.org>
+ * Copyright 2018 Katayama Hirofumi MZ <katayama.hirofumi.mz@gmail.com>
  *
  * this library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -54,6 +55,78 @@ HRESULT TrayWindowCtxMenuCreator(ITrayWindow * TrayWnd, IN HWND hWndOwner, ICont
 #define IDHK_PAGER 0x1ff
 
 static const WCHAR szTrayWndClass[] = L"Shell_TrayWnd";
+
+struct EFFECTIVE_INFO
+{
+    HWND hwndFound;
+    HWND hwndDesktop;
+    HWND hwndProgman;
+    HWND hTrayWnd;
+    BOOL bMustBeInMonitor;
+};
+
+static BOOL CALLBACK
+FindEffectiveProc(HWND hwnd, LPARAM lParam)
+{
+    EFFECTIVE_INFO *pei = (EFFECTIVE_INFO *)lParam;
+
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd))
+        return TRUE;    // continue
+
+    if (pei->hTrayWnd == hwnd || pei->hwndDesktop == hwnd ||
+        pei->hwndProgman == hwnd)
+    {
+        return TRUE;    // continue
+    }
+
+    if (pei->bMustBeInMonitor)
+    {
+        // is the window in the nearest monitor?
+        HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (hMon)
+        {
+            MONITORINFO info;
+            ZeroMemory(&info, sizeof(info));
+            info.cbSize = sizeof(info);
+            if (GetMonitorInfoW(hMon, &info))
+            {
+                RECT rcWindow, rcMonitor, rcIntersect;
+                rcMonitor = info.rcMonitor;
+
+                GetWindowRect(hwnd, &rcWindow);
+
+                if (!IntersectRect(&rcIntersect, &rcMonitor, &rcWindow))
+                    return TRUE;    // continue
+            }
+        }
+    }
+
+    pei->hwndFound = hwnd;
+    return FALSE;   // stop if found
+}
+
+static BOOL
+IsThereAnyEffectiveWindow(BOOL bMustBeInMonitor)
+{
+    EFFECTIVE_INFO ei;
+    ei.hwndFound = NULL;
+    ei.hwndDesktop = GetDesktopWindow();
+    ei.hTrayWnd = FindWindowW(L"Shell_TrayWnd", NULL);
+    ei.hwndProgman = FindWindowW(L"Progman", NULL);
+    ei.bMustBeInMonitor = bMustBeInMonitor;
+
+    EnumWindows(FindEffectiveProc, (LPARAM)&ei);
+    if (ei.hwndFound && FALSE)
+    {
+        WCHAR szClass[64], szText[64];
+        GetClassNameW(ei.hwndFound, szClass, _countof(szClass));
+        GetWindowTextW(ei.hwndFound, szText, _countof(szText));
+        MessageBoxW(NULL, szText, szClass, 0);
+    }
+    return ei.hwndFound != NULL;
+}
+
+CSimpleArray<HWND>  g_MinimizedAll;
 
 /*
  * ITrayWindow
@@ -365,7 +438,13 @@ public:
 
         m_RunFileDlgOwner = hwnd;
 
-        RunFileDlg(hwnd, NULL, NULL, NULL, NULL, RFF_CALCDIRECTORY);
+        // build the default directory from two environment variables
+        CStringW strDefaultDir, strHomePath;
+        strDefaultDir.GetEnvironmentVariable(L"HOMEDRIVE");
+        strHomePath.GetEnvironmentVariable(L"HOMEPATH");
+        strDefaultDir += strHomePath;
+
+        RunFileDlg(hwnd, NULL, (LPCWSTR)strDefaultDir, NULL, NULL, RFF_CALCDIRECTORY);
 
         m_RunFileDlgOwner = NULL;
         ::DestroyWindow(hwnd);
@@ -479,6 +558,18 @@ public:
                      SW_SHOWNORMAL);
     }
 
+    VOID ToggleDesktop()
+    {
+        if (::IsThereAnyEffectiveWindow(TRUE))
+        {
+            ShowDesktop();
+        }
+        else
+        {
+            RestoreAll();
+        }
+    }
+
     BOOL STDMETHODCALLTYPE ExecContextMenuCmd(IN UINT uiCmd)
     {
         switch (uiCmd)
@@ -512,6 +603,7 @@ public:
             break;
 
         case ID_SHELL_CMD_SHOW_DESKTOP:
+            ShowDesktop();
             break;
 
         case ID_SHELL_CMD_TILE_WND_H:
@@ -533,6 +625,10 @@ public:
         case ID_SHELL_CMD_ADJUST_DAT:
             //FIXME: Use SHRunControlPanel
             ShellExecuteW(m_hWnd, NULL, L"timedate.cpl", NULL, NULL, SW_NORMAL);
+            break;
+
+        case ID_SHELL_CMD_RESTORE_ALL:
+            RestoreAll();
             break;
 
         default:
@@ -573,10 +669,13 @@ public:
         case IDHK_PREV_TASK:
             break;
         case IDHK_MINIMIZE_ALL:
+            MinimizeAll();
             break;
         case IDHK_RESTORE_ALL:
+            RestoreAll();
             break;
         case IDHK_DESKTOP:
+            ToggleDesktop();
             break;
         case IDHK_PAGER:
             break;
@@ -589,35 +688,81 @@ public:
     {
         switch (uCommand)
         {
-        case IDM_TASKBARANDSTARTMENU:
-            DisplayProperties();
-            break;
+            case TRAYCMD_STARTMENU:
+                // TODO:
+                break;
+            case TRAYCMD_RUN_DIALOG:
+                DisplayRunFileDlg();
+                break;
+            case TRAYCMD_LOGOFF_DIALOG:
+                LogoffWindowsDialog(m_hWnd); // FIXME: Maybe handle it in a similar way as DoExitWindows?
+                break;
+            case TRAYCMD_CASCADE:
+                CascadeWindows(NULL, MDITILE_SKIPDISABLED, NULL, 0, NULL);
+                break;
+            case TRAYCMD_TILE_H:
+                TileWindows(NULL, MDITILE_HORIZONTAL, NULL, 0, NULL);
+                break;
+            case TRAYCMD_TILE_V:
+                TileWindows(NULL, MDITILE_VERTICAL, NULL, 0, NULL);
+                break;
+            case TRAYCMD_TOGGLE_DESKTOP:
+                ToggleDesktop();
+                break;
+            case TRAYCMD_DATE_AND_TIME:
+                ShellExecuteW(m_hWnd, NULL, L"timedate.cpl", NULL, NULL, SW_NORMAL);
+                break;
+            case TRAYCMD_TASKBAR_PROPERTIES:
+                DisplayProperties();
+                break;
+            case TRAYCMD_MINIMIZE_ALL:
+                MinimizeAll();
+                break;
+            case TRAYCMD_RESTORE_ALL:
+                RestoreAll();
+                break;
+            case TRAYCMD_SHOW_DESKTOP:
+                ShowDesktop();
+                break;
+            case TRAYCMD_SHOW_TASK_MGR:
+                OpenTaskManager(m_hWnd);
+                break;
+            case TRAYCMD_CUSTOMIZE_TASKBAR:
+                break;
+            case TRAYCMD_LOCK_TASKBAR:
+                if (SHRestricted(REST_CLASSICSHELL) == 0)
+                {
+                    Lock(!g_TaskbarSettings.bLock);
+                }
+                break;
+            case TRAYCMD_HELP_AND_SUPPORT:
+                ExecResourceCmd(IDS_HELP_COMMAND);
+                break;
+            case TRAYCMD_CONTROL_PANEL:
+                // TODO:
+                break;
+            case TRAYCMD_SHUTDOWN_DIALOG:
+                DoExitWindows();
+                break;
+            case TRAYCMD_PRINTERS_AND_FAXES:
+                // TODO:
+                break;
+            case TRAYCMD_LOCK_DESKTOP:
+                // TODO:
+                break;
+            case TRAYCMD_SWITCH_USER_DIALOG:
+                // TODO:
+                break;
+            case IDM_SEARCH:
+            case TRAYCMD_SEARCH_FILES:
+                SHFindFiles(NULL, NULL);
+                break;
+            case TRAYCMD_SEARCH_COMPUTERS:
+                SHFindComputer(NULL, NULL);
+                break;
 
-        case IDM_SEARCH:
-            SHFindFiles(NULL, NULL);
-            break;
-
-        case IDM_HELPANDSUPPORT:
-            ExecResourceCmd(IDS_HELP_COMMAND);
-            break;
-
-        case IDM_RUN:
-            DisplayRunFileDlg();
-            break;
-
-        /* FIXME: Handle these commands as well */
-        case IDM_SYNCHRONIZE:
-        case IDM_DISCONNECT:
-        case IDM_UNDOCKCOMPUTER:
-            break;
-
-        case IDM_LOGOFF:
-            LogoffWindowsDialog(m_hWnd); // FIXME: Maybe handle it in a similar way as DoExitWindows?
-            break;
-
-        case IDM_SHUTDOWN:
-            DoExitWindows();
-            break;
+            default:
+                break;
         }
 
         return FALSE;
@@ -702,14 +847,26 @@ public:
         IN BOOL TrackUp,
         IN PVOID Context OPTIONAL)
     {
-        INT x = ppt->x;
-        INT y = ppt->y;
+        POINT pt;
+        TPMPARAMS params;
+        RECT rc;
         HRESULT hr;
         UINT uCommand;
         HMENU popup = CreatePopupMenu();
 
         if (popup == NULL)
             return E_FAIL;
+
+        if (ppt)
+        {
+            pt = *ppt;
+        }
+        else
+        {
+            ::GetWindowRect(m_hWnd, &rc);
+            pt.x = rc.left;
+            pt.y = rc.top;
+        }
 
         TRACE("Before Query\n");
         hr = contextMenu->QueryContextMenu(popup, 0, 0, UINT_MAX, CMF_NORMAL);
@@ -721,7 +878,20 @@ public:
         }
 
         TRACE("Before Tracking\n");
-        uCommand = ::TrackPopupMenuEx(popup, TPM_RETURNCMD, x, y, m_hWnd, NULL);
+        ::SetForegroundWindow(m_hWnd);
+        if (hwndExclude)
+        {
+            ::GetWindowRect(hwndExclude, &rc);
+            ZeroMemory(&params, sizeof(params));
+            params.cbSize = sizeof(params);
+            params.rcExclude = rc;
+            uCommand = ::TrackPopupMenuEx(popup, TPM_RETURNCMD, pt.x, pt.y, m_hWnd, &params);
+        }
+        else
+        {
+            uCommand = ::TrackPopupMenuEx(popup, TPM_RETURNCMD, pt.x, pt.y, m_hWnd, NULL);
+        }
+        ::PostMessage(m_hWnd, WM_NULL, 0, 0);
 
         if (uCommand != 0)
         {
@@ -2498,7 +2668,7 @@ ChangePos:
             if (!(m_StartButton.SendMessage(BM_GETSTATE, 0, 0) & BST_PUSHED))
             {
                 CComPtr<IContextMenu> ctxMenu;
-                StartMenuBtnCtxMenuCreator(this, m_hWnd, &ctxMenu);
+                CStartMenuBtnCtxMenu_CreateInstance(this, m_hWnd, &ctxMenu);
                 TrackCtxMenu(ctxMenu, ppt, hWndExclude, m_Position == ABE_BOTTOM, this);
             }
         }
@@ -2631,9 +2801,97 @@ HandleTrayContextMenu:
         return TRUE;
     }
 
+    LRESULT OnGetTaskSwitch(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+    {
+        bHandled = TRUE;
+        return (LRESULT)m_TaskSwitch;
+    }
+
     LRESULT OnHotkey(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
     {
         return HandleHotKey(wParam);
+    }
+
+    struct MINIMIZE_INFO
+    {
+        HWND hwndDesktop;
+        HWND hTrayWnd;
+        HWND hwndProgman;
+        BOOL bRet;
+        CSimpleArray<HWND> *pMinimizedAll;
+        BOOL bShowDesktop;
+    };
+
+    static BOOL IsDialog(HWND hwnd)
+    {
+        WCHAR szClass[32];
+        GetClassNameW(hwnd, szClass, _countof(szClass));
+        return wcscmp(szClass, L"#32770") == 0;
+    }
+
+    static BOOL CALLBACK MinimizeWindowsProc(HWND hwnd, LPARAM lParam)
+    {
+        MINIMIZE_INFO *info = (MINIMIZE_INFO *)lParam;
+        if (hwnd == info->hwndDesktop || hwnd == info->hTrayWnd ||
+            hwnd == info->hwndProgman)
+        {
+            return TRUE;
+        }
+        if (!info->bShowDesktop)
+        {
+            if (!::IsWindowEnabled(hwnd) || IsDialog(hwnd))
+                return TRUE;
+            HWND hwndOwner = ::GetWindow(hwnd, GW_OWNER);
+            if (hwndOwner && !::IsWindowEnabled(hwndOwner))
+                return TRUE;
+        }
+        if (::IsWindowVisible(hwnd) && !::IsIconic(hwnd))
+        {
+            ::ShowWindowAsync(hwnd, SW_MINIMIZE);
+            info->bRet = TRUE;
+            info->pMinimizedAll->Add(hwnd);
+        }
+        return TRUE;
+    }
+
+    VOID MinimizeAll(BOOL bShowDesktop = FALSE)
+    {
+        MINIMIZE_INFO info;
+        info.hwndDesktop = GetDesktopWindow();;
+        info.hTrayWnd = FindWindowW(L"Shell_TrayWnd", NULL);
+        info.hwndProgman = FindWindowW(L"Progman", NULL);
+        info.bRet = FALSE;
+        info.pMinimizedAll = &g_MinimizedAll;
+        info.bShowDesktop = bShowDesktop;
+        EnumWindows(MinimizeWindowsProc, (LPARAM)&info);
+
+        // invalid handles should be cleared to avoid mismatch of handles
+        for (INT i = 0; i < g_MinimizedAll.GetSize(); ++i)
+        {
+            if (!::IsWindow(g_MinimizedAll[i]))
+                g_MinimizedAll[i] = NULL;
+        }
+
+        ::SetForegroundWindow(m_DesktopWnd);
+        ::SetFocus(m_DesktopWnd);
+    }
+
+    VOID ShowDesktop()
+    {
+        MinimizeAll(TRUE);
+    }
+
+    VOID RestoreAll()
+    {
+        for (INT i = g_MinimizedAll.GetSize() - 1; i >= 0; --i)
+        {
+            HWND hwnd = g_MinimizedAll[i];
+            if (::IsWindowVisible(hwnd) && ::IsIconic(hwnd))
+            {
+                ::ShowWindow(hwnd, SW_RESTORE);
+            }
+        }
+        g_MinimizedAll.RemoveAll();
     }
 
     LRESULT OnCommand(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
@@ -2703,6 +2961,24 @@ HandleTrayContextMenu:
 
         AdjustSizerRect(rc, m_Position);
 
+        return 0;
+    }
+
+    LRESULT OnInitMenuPopup(INT code, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+    {
+        HMENU hMenu = (HMENU)wParam;
+        if (::IsThereAnyEffectiveWindow(FALSE))
+        {
+            ::EnableMenuItem(hMenu, ID_SHELL_CMD_CASCADE_WND, MF_BYCOMMAND | MF_ENABLED);
+            ::EnableMenuItem(hMenu, ID_SHELL_CMD_TILE_WND_H, MF_BYCOMMAND | MF_ENABLED);
+            ::EnableMenuItem(hMenu, ID_SHELL_CMD_TILE_WND_V, MF_BYCOMMAND | MF_ENABLED);
+        }
+        else
+        {
+            ::EnableMenuItem(hMenu, ID_SHELL_CMD_CASCADE_WND, MF_BYCOMMAND | MF_GRAYED);
+            ::EnableMenuItem(hMenu, ID_SHELL_CMD_TILE_WND_H, MF_BYCOMMAND | MF_GRAYED);
+            ::EnableMenuItem(hMenu, ID_SHELL_CMD_TILE_WND_V, MF_BYCOMMAND | MF_GRAYED);
+        }
         return 0;
     }
 
@@ -2842,12 +3118,14 @@ HandleTrayContextMenu:
         MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
         MESSAGE_HANDLER(WM_NCMOUSEMOVE, OnMouseMove)
         MESSAGE_HANDLER(WM_APP_TRAYDESTROY, OnAppTrayDestroy)
-        MESSAGE_HANDLER(TWM_OPENSTARTMENU, OnOpenStartMenu)
-        MESSAGE_HANDLER(TWM_DOEXITWINDOWS, OnDoExitWindows)
         MESSAGE_HANDLER(WM_CLOSE, OnDoExitWindows)
         MESSAGE_HANDLER(WM_HOTKEY, OnHotkey)
         MESSAGE_HANDLER(WM_NCCALCSIZE, OnNcCalcSize)
+        MESSAGE_HANDLER(WM_INITMENUPOPUP, OnInitMenuPopup)
         MESSAGE_HANDLER(TWM_SETTINGSCHANGED, OnTaskbarSettingsChanged)
+        MESSAGE_HANDLER(TWM_OPENSTARTMENU, OnOpenStartMenu)
+        MESSAGE_HANDLER(TWM_DOEXITWINDOWS, OnDoExitWindows)
+        MESSAGE_HANDLER(TWM_GETTASKSWITCH, OnGetTaskSwitch)
     ALT_MSG_MAP(1)
     END_MSG_MAP()
 
@@ -2995,8 +3273,22 @@ public:
                          UINT idCmdLast,
                          UINT uFlags)
     {
-        HMENU menubase = LoadPopupMenu(hExplorerInstance, MAKEINTRESOURCEW(IDM_TRAYWND));
-        if (!menubase)
+        HMENU hMenuBase;
+
+        hMenuBase = LoadPopupMenu(hExplorerInstance, MAKEINTRESOURCEW(IDM_TRAYWND));
+
+        if (g_MinimizedAll.GetSize() != 0 && !::IsThereAnyEffectiveWindow(TRUE))
+        {
+            CStringW strRestoreAll(MAKEINTRESOURCEW(IDS_RESTORE_ALL));
+            MENUITEMINFOW mii = { sizeof(mii) };
+            mii.fMask = MIIM_ID | MIIM_TYPE;
+            mii.wID = ID_SHELL_CMD_RESTORE_ALL;
+            mii.fType = MFT_STRING;
+            mii.dwTypeData = const_cast<LPWSTR>(&strRestoreAll[0]);
+            SetMenuItemInfoW(hMenuBase, ID_SHELL_CMD_SHOW_DESKTOP, FALSE, &mii);
+        }
+
+        if (!hMenuBase)
             return HRESULT_FROM_WIN32(GetLastError());
 
         if (SHRestricted(REST_CLASSICSHELL) != 0)
@@ -3006,15 +3298,15 @@ public:
                        MF_BYCOMMAND);
         }
 
-        CheckMenuItem(menubase,
+        CheckMenuItem(hMenuBase,
                       ID_LOCKTASKBAR,
                       MF_BYCOMMAND | (g_TaskbarSettings.bLock ? MF_CHECKED : MF_UNCHECKED));
 
         UINT idCmdNext;
-        idCmdNext = Shell_MergeMenus(hPopup, menubase, indexMenu, idCmdFirst, idCmdLast, MM_SUBMENUSHAVEIDS | MM_ADDSEPARATOR);
+        idCmdNext = Shell_MergeMenus(hPopup, hMenuBase, indexMenu, idCmdFirst, idCmdLast, MM_SUBMENUSHAVEIDS | MM_ADDSEPARATOR);
         m_idCmdCmFirst = idCmdNext - idCmdFirst;
 
-        ::DestroyMenu(menubase);
+        ::DestroyMenu(hMenuBase);
 
         if (TrayWnd->m_TrayBandSite != NULL)
         {
@@ -3037,7 +3329,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE
         InvokeCommand(LPCMINVOKECOMMANDINFO lpici)
     {
-        UINT uiCmdId = (UINT) lpici->lpVerb;
+        UINT uiCmdId = PtrToUlong(lpici->lpVerb);
         if (uiCmdId != 0)
         {
             if (uiCmdId >= m_idCmdCmFirst)

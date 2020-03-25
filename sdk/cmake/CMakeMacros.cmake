@@ -74,6 +74,7 @@ macro(set_cpp)
             include_directories(${REACTOS_SOURCE_DIR}/sdk/include/c++/stlport)
         else()
             replace_compile_flags("-nostdinc" " ")
+            add_definitions(-DPAL_STDCPP_COMPAT)
         endif()
     endif()
 
@@ -83,7 +84,7 @@ endmacro()
 function(add_dependency_node _node)
     if(GENERATE_DEPENDENCY_GRAPH)
         get_target_property(_type ${_node} TYPE)
-        if(_type MATCHES SHARED_LIBRARY OR ${_node} MATCHES ntoskrnl)
+        if(_type MATCHES SHARED_LIBRARY|MODULE_LIBRARY OR ${_node} MATCHES ntoskrnl)
             file(APPEND ${REACTOS_BINARY_DIR}/dependencies.graphml "    <node id=\"${_node}\"/>\n")
         endif()
      endif()
@@ -92,7 +93,7 @@ endfunction()
 function(add_dependency_edge _source _target)
     if(GENERATE_DEPENDENCY_GRAPH)
         get_target_property(_type ${_source} TYPE)
-        if(_type MATCHES SHARED_LIBRARY)
+        if(_type MATCHES SHARED_LIBRARY|MODULE_LIBRARY)
             file(APPEND ${REACTOS_BINARY_DIR}/dependencies.graphml "    <edge source=\"${_source}\" target=\"${_target}\"/>\n")
         endif()
     endif()
@@ -162,14 +163,19 @@ function(add_link)
     set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/${_LINK_NAME}.lnk PROPERTIES GENERATED TRUE)
 endfunction()
 
+#
+# WARNING!
+# Please keep the numbering in this list in sync with
+# boot/bootdata/packages/reactos.dff.in
+#
 macro(dir_to_num dir var)
-    if(${dir} STREQUAL reactos/system32)
+    if(${dir} STREQUAL reactos)
         set(${var} 1)
-    elseif(${dir} STREQUAL reactos/system32/drivers)
+    elseif(${dir} STREQUAL reactos/system32)
         set(${var} 2)
-    elseif(${dir} STREQUAL reactos/Fonts)
+    elseif(${dir} STREQUAL reactos/system32/drivers)
         set(${var} 3)
-    elseif(${dir} STREQUAL reactos)
+    elseif(${dir} STREQUAL reactos/Fonts)
         set(${var} 4)
     elseif(${dir} STREQUAL reactos/system32/drivers/etc)
         set(${var} 5)
@@ -285,6 +291,18 @@ macro(dir_to_num dir var)
         set(${var} 59)
     elseif(${dir} STREQUAL reactos/winsxs/x86_reactos.newapi_6595b64144ccf1df_1.0.0.0_none_deadbeef)
         set(${var} 60)
+    elseif(${dir} STREQUAL reactos/winsxs/x86_microsoft.windows.gdiplus_6595b64144ccf1df_1.0.14393.0_none_deadbeef)
+        set(${var} 61)
+    elseif(${dir} STREQUAL reactos/Resources/Themes/Modern)
+        set(${var} 62)
+    elseif(${dir} STREQUAL reactos/3rdParty)
+        set(${var} 63)
+    elseif(${dir} STREQUAL reactos/Resources/Themes/Lunar)
+        set(${var} 64)	
+    elseif(${dir} STREQUAL reactos/Resources/Themes/Mizu)
+        set(${var} 65)
+    elseif(${dir} STREQUAL reactos/system32/spool/prtprocs/x64)
+        set(${var} 66)
     else()
         message(FATAL_ERROR "Wrong destination: ${dir}")
     endif()
@@ -511,6 +529,11 @@ if(NOT MSVC_IDE)
     function(add_library name)
         _add_library(${name} ${ARGN})
         add_clean_target(${name})
+        # cmake adds a module_EXPORTS define when compiling a module or a shared library. We don't use that.
+        get_target_property(_type ${name} TYPE)
+        if (_type MATCHES SHARED_LIBRARY|MODULE_LIBRARY)
+            set_target_properties(${name} PROPERTIES DEFINE_SYMBOL "")
+        endif()
     endfunction()
 
     function(add_executable name)
@@ -536,12 +559,26 @@ elseif(USE_FOLDER_STRUCTURE)
             string(SUBSTRING ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR_LENGTH} -1 CMAKE_CURRENT_SOURCE_DIR_RELATIVE)
             set_property(TARGET "${name}" PROPERTY FOLDER "${CMAKE_CURRENT_SOURCE_DIR_RELATIVE}")
         endif()
+        # cmake adds a module_EXPORTS define when compiling a module or a shared library. We don't use that.
+        get_target_property(_type ${name} TYPE)
+        if (_type MATCHES SHARED_LIBRARY|MODULE_LIBRARY)
+            set_target_properties(${name} PROPERTIES DEFINE_SYMBOL "")
+        endif()
     endfunction()
 
     function(add_executable name)
         _add_executable(${name} ${ARGN})
         string(SUBSTRING ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR_LENGTH} -1 CMAKE_CURRENT_SOURCE_DIR_RELATIVE)
         set_property(TARGET "${name}" PROPERTY FOLDER "${CMAKE_CURRENT_SOURCE_DIR_RELATIVE}")
+    endfunction()
+else()
+    function(add_library name)
+        _add_library(${name} ${ARGN})
+        # cmake adds a module_EXPORTS define when compiling a module or a shared library. We don't use that.
+        get_target_property(_type ${name} TYPE)
+        if (_type MATCHES SHARED_LIBRARY|MODULE_LIBRARY)
+            set_target_properties(${name} PROPERTIES DEFINE_SYMBOL "")
+        endif()
     endfunction()
 endif()
 
@@ -799,43 +836,72 @@ function(create_registry_hives)
                 NO_CAB
                 FOR bootcd regtest)
 
-    # livecd hives
+    # BootCD setup system hive
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/boot/bootdata/SETUPREG.HIV
+        COMMAND native-mkhive -h:SETUPREG -u -d:${CMAKE_BINARY_DIR}/boot/bootdata ${CMAKE_BINARY_DIR}/boot/bootdata/hivesys_utf16.inf ${CMAKE_SOURCE_DIR}/boot/bootdata/setupreg.inf
+        DEPENDS native-mkhive ${CMAKE_BINARY_DIR}/boot/bootdata/hivesys_utf16.inf)
+
+    add_custom_target(bootcd_hives
+        DEPENDS ${CMAKE_BINARY_DIR}/boot/bootdata/SETUPREG.HIV)
+
+    add_cd_file(
+        FILE ${CMAKE_BINARY_DIR}/boot/bootdata/SETUPREG.HIV
+        TARGET bootcd_hives
+        DESTINATION reactos
+        NO_CAB
+        FOR bootcd regtest)
+
+    # LiveCD hives
     list(APPEND _livecd_inf_files
         ${_registry_inf}
-        ${CMAKE_SOURCE_DIR}/boot/bootdata/livecd.inf
-        ${CMAKE_SOURCE_DIR}/boot/bootdata/hiveinst.inf)
+        ${CMAKE_SOURCE_DIR}/boot/bootdata/livecd.inf)
+    if(SARCH STREQUAL "xbox")
+        list(APPEND _livecd_inf_files
+            ${CMAKE_SOURCE_DIR}/boot/bootdata/hiveinst_xbox.inf)
+    else()
+        list(APPEND _livecd_inf_files
+            ${CMAKE_SOURCE_DIR}/boot/bootdata/hiveinst.inf)
+    endif()
 
     add_custom_command(
-        OUTPUT ${CMAKE_BINARY_DIR}/boot/bootdata/sam
-            ${CMAKE_BINARY_DIR}/boot/bootdata/default
-            ${CMAKE_BINARY_DIR}/boot/bootdata/security
-            ${CMAKE_BINARY_DIR}/boot/bootdata/software
-            ${CMAKE_BINARY_DIR}/boot/bootdata/system
-            ${CMAKE_BINARY_DIR}/boot/bootdata/BCD
-        COMMAND native-mkhive ${CMAKE_BINARY_DIR}/boot/bootdata ${_livecd_inf_files}
+        OUTPUT ${CMAKE_BINARY_DIR}/boot/bootdata/system
+               ${CMAKE_BINARY_DIR}/boot/bootdata/software
+               ${CMAKE_BINARY_DIR}/boot/bootdata/default
+               ${CMAKE_BINARY_DIR}/boot/bootdata/sam
+               ${CMAKE_BINARY_DIR}/boot/bootdata/security
+        COMMAND native-mkhive -h:SYSTEM,SOFTWARE,DEFAULT,SAM,SECURITY -d:${CMAKE_BINARY_DIR}/boot/bootdata ${_livecd_inf_files}
         DEPENDS native-mkhive ${_livecd_inf_files})
 
     add_custom_target(livecd_hives
-        DEPENDS ${CMAKE_BINARY_DIR}/boot/bootdata/sam
-            ${CMAKE_BINARY_DIR}/boot/bootdata/default
-            ${CMAKE_BINARY_DIR}/boot/bootdata/security
-            ${CMAKE_BINARY_DIR}/boot/bootdata/software
-            ${CMAKE_BINARY_DIR}/boot/bootdata/system
-            ${CMAKE_BINARY_DIR}/boot/bootdata/BCD)
+        DEPENDS ${CMAKE_BINARY_DIR}/boot/bootdata/system
+                ${CMAKE_BINARY_DIR}/boot/bootdata/software
+                ${CMAKE_BINARY_DIR}/boot/bootdata/default
+                ${CMAKE_BINARY_DIR}/boot/bootdata/sam
+                ${CMAKE_BINARY_DIR}/boot/bootdata/security)
 
     add_cd_file(
-        FILE ${CMAKE_BINARY_DIR}/boot/bootdata/sam
-            ${CMAKE_BINARY_DIR}/boot/bootdata/default
-            ${CMAKE_BINARY_DIR}/boot/bootdata/security
-            ${CMAKE_BINARY_DIR}/boot/bootdata/software
-            ${CMAKE_BINARY_DIR}/boot/bootdata/system
+        FILE ${CMAKE_BINARY_DIR}/boot/bootdata/system
+             ${CMAKE_BINARY_DIR}/boot/bootdata/software
+             ${CMAKE_BINARY_DIR}/boot/bootdata/default
+             ${CMAKE_BINARY_DIR}/boot/bootdata/sam
+             ${CMAKE_BINARY_DIR}/boot/bootdata/security
         TARGET livecd_hives
         DESTINATION reactos/system32/config
         FOR livecd)
 
+    # BCD Hive
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/boot/bootdata/BCD
+        COMMAND native-mkhive -h:BCD -u -d:${CMAKE_BINARY_DIR}/boot/bootdata ${CMAKE_BINARY_DIR}/boot/bootdata/hivebcd_utf16.inf
+        DEPENDS native-mkhive ${CMAKE_BINARY_DIR}/boot/bootdata/hivebcd_utf16.inf)
+
+    add_custom_target(bcd_hive
+        DEPENDS ${CMAKE_BINARY_DIR}/boot/bootdata/BCD)
+
     add_cd_file(
         FILE ${CMAKE_BINARY_DIR}/boot/bootdata/BCD
-        TARGET livecd_hives
+        TARGET bcd_hive
         DESTINATION efi/boot
         NO_CAB
         FOR bootcd regtest livecd)

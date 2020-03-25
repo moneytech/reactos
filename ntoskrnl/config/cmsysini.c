@@ -391,15 +391,16 @@ CmpInitHiveFromFile(IN PCUNICODE_STRING HiveName,
     return STATUS_SUCCESS;
 }
 
+INIT_FUNCTION
 NTSTATUS
 NTAPI
-INIT_FUNCTION
 CmpSetSystemValues(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
-    OBJECT_ATTRIBUTES ObjectAttributes;
-    UNICODE_STRING KeyName, ValueName = { 0, 0, NULL };
-    HANDLE KeyHandle = NULL;
     NTSTATUS Status;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    HANDLE KeyHandle;
+    UNICODE_STRING KeyName, ValueName = { 0, 0, NULL };
+
     ASSERT(LoaderBlock != NULL);
 
     /* Setup attributes for loader options */
@@ -412,9 +413,10 @@ CmpSetSystemValues(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
                                NULL,
                                NULL);
     Status = NtOpenKey(&KeyHandle, KEY_WRITE, &ObjectAttributes);
-    if (!NT_SUCCESS(Status)) goto Quickie;
+    if (!NT_SUCCESS(Status))
+        return Status;
 
-    /* Key opened, now write to the key */
+    /* Setup the value for the system start options */
     RtlInitUnicodeString(&KeyName, L"SystemStartOptions");
     Status = NtSetValueKey(KeyHandle,
                            &KeyName,
@@ -422,9 +424,10 @@ CmpSetSystemValues(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
                            REG_SZ,
                            CmpLoadOptions.Buffer,
                            CmpLoadOptions.Length);
-    if (!NT_SUCCESS(Status)) goto Quickie;
+    if (!NT_SUCCESS(Status))
+        goto Quit;
 
-    /* Setup value name for system boot device in ARC format */
+    /* Setup the value for the system boot device in ARC format */
     RtlInitUnicodeString(&KeyName, L"SystemBootDevice");
     RtlCreateUnicodeStringFromAsciiz(&ValueName, LoaderBlock->ArcBootDeviceName);
     Status = NtSetValueKey(KeyHandle,
@@ -434,20 +437,18 @@ CmpSetSystemValues(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
                            ValueName.Buffer,
                            ValueName.Length);
 
-Quickie:
-    /* Free the buffers */
+    /* Free the temporary string */
     RtlFreeUnicodeString(&ValueName);
 
+Quit:
     /* Close the key and return */
-    if (KeyHandle) NtClose(KeyHandle);
-
-    /* Return the status */
-    return (ExpInTextModeSetup ? STATUS_SUCCESS : Status);
+    NtClose(KeyHandle);
+    return Status;
 }
 
+INIT_FUNCTION
 static
 NTSTATUS
-INIT_FUNCTION
 CmpCreateHardwareProfile(HANDLE ControlSetHandle)
 {
     OBJECT_ATTRIBUTES ObjectAttributes;
@@ -517,9 +518,9 @@ done:
     return Status;
 }
 
+INIT_FUNCTION
 NTSTATUS
 NTAPI
-INIT_FUNCTION
 CmpCreateControlSet(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
     UNICODE_STRING ConfigName = RTL_CONSTANT_STRING(L"Control\\IDConfigDB");
@@ -858,9 +859,9 @@ CmpLinkHiveToMaster(IN PUNICODE_STRING LinkName,
     return STATUS_SUCCESS;
 }
 
+INIT_FUNCTION
 BOOLEAN
 NTAPI
-INIT_FUNCTION
 CmpInitializeSystemHive(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
     static const UNICODE_STRING HiveName = RTL_CONSTANT_STRING(L"SYSTEM");
@@ -975,9 +976,9 @@ CmpInitializeSystemHive(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
     return TRUE;
 }
 
+INIT_FUNCTION
 NTSTATUS
 NTAPI
-INIT_FUNCTION
 CmpCreateObjectTypes(VOID)
 {
     OBJECT_TYPE_INITIALIZER ObjectTypeInitializer;
@@ -1009,9 +1010,9 @@ CmpCreateObjectTypes(VOID)
     return ObCreateObjectType(&Name, &ObjectTypeInitializer, NULL, &CmpKeyObjectType);
 }
 
+INIT_FUNCTION
 BOOLEAN
 NTAPI
-INIT_FUNCTION
 CmpCreateRootNode(IN PHHIVE Hive,
                   IN PCWSTR Name,
                   OUT PHCELL_INDEX Index)
@@ -1065,9 +1066,9 @@ CmpCreateRootNode(IN PHHIVE Hive,
     return TRUE;
 }
 
+INIT_FUNCTION
 BOOLEAN
 NTAPI
-INIT_FUNCTION
 CmpCreateRegistryRoot(VOID)
 {
     UNICODE_STRING KeyName;
@@ -1165,80 +1166,24 @@ CmpCreateRegistryRoot(VOID)
     return TRUE;
 }
 
-NTSTATUS
-NTAPI
-CmpGetRegistryPath(OUT PWCHAR ConfigPath)
+static PCWSTR
+CmpGetRegistryPath(VOID)
 {
-    OBJECT_ATTRIBUTES ObjectAttributes;
-    NTSTATUS Status;
-    HANDLE KeyHandle;
-    PKEY_VALUE_PARTIAL_INFORMATION ValueInfo;
-    UNICODE_STRING KeyName = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\HARDWARE");
-    UNICODE_STRING ValueName = RTL_CONSTANT_STRING(L"InstallPath");
-    ULONG BufferSize, ResultSize;
+    PCWSTR ConfigPath;
 
     /* Check if we are booted in setup */
-    if (ExpInTextModeSetup)
+    if (!ExpInTextModeSetup)
     {
-        DPRINT1("CmpGetRegistryPath TextMode setup HACK!!\n");
-
-        /* Setup the object attributes */
-        InitializeObjectAttributes(&ObjectAttributes,
-                                   &KeyName,
-                                   OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
-                                   NULL,
-                                   NULL);
-        /* Open the key */
-        Status =  ZwOpenKey(&KeyHandle,
-                            KEY_ALL_ACCESS,
-                            &ObjectAttributes);
-        if (!NT_SUCCESS(Status)) return Status;
-
-        /* Allocate the buffer */
-        BufferSize = sizeof(KEY_VALUE_PARTIAL_INFORMATION) + 4096;
-        ValueInfo = ExAllocatePoolWithTag(PagedPool, BufferSize, TAG_CM);
-        if (!ValueInfo)
-        {
-            /* Fail */
-            ZwClose(KeyHandle);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-        /* Query the value */
-        Status = ZwQueryValueKey(KeyHandle,
-                                 &ValueName,
-                                 KeyValuePartialInformation,
-                                 ValueInfo,
-                                 BufferSize,
-                                 &ResultSize);
-        ZwClose(KeyHandle);
-        if (!NT_SUCCESS(Status))
-        {
-            /* Fail */
-            ExFreePoolWithTag(ValueInfo, TAG_CM);
-            return Status;
-        }
-
-        /* Copy the config path and null-terminate it */
-        RtlCopyMemory(ConfigPath,
-                      ValueInfo->Data,
-                      ValueInfo->DataLength);
-        ConfigPath[ValueInfo->DataLength / sizeof(WCHAR)] = UNICODE_NULL;
-        ExFreePoolWithTag(ValueInfo, TAG_CM);
+        ConfigPath = L"\\SystemRoot\\System32\\Config\\";
     }
     else
     {
-        /* Just use default path */
-        wcscpy(ConfigPath, L"\\SystemRoot");
+        ConfigPath = L"\\SystemRoot\\";
     }
-
-    /* Add registry path */
-    wcscat(ConfigPath, L"\\System32\\Config\\");
 
     DPRINT1("CmpGetRegistryPath: ConfigPath = '%S'\n", ConfigPath);
 
-    /* Done */
-    return STATUS_SUCCESS;
+    return ConfigPath;
 }
 
 _Function_class_(KSTART_ROUTINE)
@@ -1246,7 +1191,8 @@ VOID
 NTAPI
 CmpLoadHiveThread(IN PVOID StartContext)
 {
-    WCHAR FileBuffer[MAX_PATH], RegBuffer[MAX_PATH], ConfigPath[MAX_PATH];
+    WCHAR FileBuffer[64], RegBuffer[64];
+    PCWSTR ConfigPath;
     UNICODE_STRING TempName, FileName, RegName;
     ULONG i, ErrorResponse, WorkerCount, Length;
     USHORT FileStart;
@@ -1269,7 +1215,7 @@ CmpLoadHiveThread(IN PVOID StartContext)
     RtlInitEmptyUnicodeString(&RegName, RegBuffer, sizeof(RegBuffer));
 
     /* Now build the system root path */
-    CmpGetRegistryPath(ConfigPath);
+    ConfigPath = CmpGetRegistryPath();
     RtlInitUnicodeString(&TempName, ConfigPath);
     RtlAppendUnicodeStringToString(&FileName, &TempName);
     FileStart = FileName.Length;
@@ -1369,15 +1315,19 @@ CmpLoadHiveThread(IN PVOID StartContext)
             Length = CmHive->Hive.Storage[Stable].Length + HBLOCK_SIZE;
 
             /* Check if the cluster size doesn't match */
-            if (CmHive->Hive.Cluster != ClusterSize) ASSERT(FALSE);
+            if (CmHive->Hive.Cluster != ClusterSize)
+            {
+                DPRINT1("FIXME: Support for CmHive->Hive.Cluster (%lu) != ClusterSize (%lu) is unimplemented!\n",
+                        CmHive->Hive.Cluster, ClusterSize);
+            }
 
             /* Set the file size */
-            DPRINT("FIXME: Should set file size: %lx\n", Length);
+            DPRINT("FIXME: Should set file size: %lu\n", Length);
             //if (!CmpFileSetSize((PHHIVE)CmHive, HFILE_TYPE_PRIMARY, Length, Length))
-            {
+            //{
                 /* This shouldn't fail */
                 //ASSERT(FALSE);
-            }
+            //}
 
             /* Another thing we don't support is NTLDR-recovery */
             if (CmHive->Hive.BaseBlock->BootRecover) ASSERT(FALSE);
@@ -1405,9 +1355,10 @@ CmpLoadHiveThread(IN PVOID StartContext)
 
 VOID
 NTAPI
-CmpInitializeHiveList(IN USHORT Flag)
+CmpInitializeHiveList(VOID)
 {
-    WCHAR FileBuffer[MAX_PATH], RegBuffer[MAX_PATH], ConfigPath[MAX_PATH];
+    WCHAR FileBuffer[64], RegBuffer[64];
+    PCWSTR ConfigPath;
     UNICODE_STRING TempName, FileName, RegName;
     HANDLE Thread;
     NTSTATUS Status;
@@ -1424,7 +1375,7 @@ CmpInitializeHiveList(IN USHORT Flag)
     RtlInitEmptyUnicodeString(&RegName, RegBuffer, sizeof(RegBuffer));
 
     /* Now build the system root path */
-    CmpGetRegistryPath(ConfigPath);
+    ConfigPath = CmpGetRegistryPath();
     RtlInitUnicodeString(&TempName, ConfigPath);
     RtlAppendUnicodeStringToString(&FileName, &TempName);
 
@@ -1554,9 +1505,9 @@ CmpInitializeHiveList(IN USHORT Flag)
     CmpNoVolatileCreates = TRUE;
 }
 
+INIT_FUNCTION
 BOOLEAN
 NTAPI
-INIT_FUNCTION
 CmInitSystem1(VOID)
 {
     OBJECT_ATTRIBUTES ObjectAttributes;
@@ -1770,9 +1721,9 @@ CmInitSystem1(VOID)
     return TRUE;
 }
 
+INIT_FUNCTION
 VOID
 NTAPI
-INIT_FUNCTION
 CmpFreeDriverList(IN PHHIVE Hive,
                   IN PLIST_ENTRY DriverList)
 {
@@ -1819,9 +1770,9 @@ CmpFreeDriverList(IN PHHIVE Hive,
     }
 }
 
+INIT_FUNCTION
 PUNICODE_STRING*
 NTAPI
-INIT_FUNCTION
 CmGetSystemDriverList(VOID)
 {
     LIST_ENTRY DriverList;

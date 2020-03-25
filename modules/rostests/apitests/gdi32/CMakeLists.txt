@@ -21,7 +21,6 @@ list(APPEND SOURCE
     DPtoLP.c
     EngAcquireSemaphore.c
     EngCreateSemaphore.c
-    EngDeleteSemaphore.c
     EngReleaseSemaphore.c
     EnumFontFamilies.c
     ExcludeClipRect.c
@@ -47,6 +46,7 @@ list(APPEND SOURCE
     GetDIBits.c
     GetFontResourceInfoW.c
     GetGlyphIndices.c
+    GetGlyphOutline.c
     GetObject.c
     GetRandomRgn.c
     GetPixel.c
@@ -54,6 +54,7 @@ list(APPEND SOURCE
     GetTextExtentExPoint.c
     GetTextFace.c
     GetTextMetrics.c
+    LPtoDP.c
     MaskBlt.c
     NtGdiAddFontResource.c
     OffsetClipRgn.c
@@ -73,6 +74,7 @@ list(APPEND SOURCE
     SetSysColors.c
     SetWindowExtEx.c
     SetWorldTransform.c
+    TextTransform.c
     init.c
     precomp.h)
 

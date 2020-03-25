@@ -19,6 +19,7 @@
  * VDM Subsystem
  */
 
+/* API_NUMBER: ConsolepRegisterVDM */
 CSR_API(SrvRegisterConsoleVDM)
 {
     NTSTATUS Status;
@@ -38,7 +39,7 @@ CSR_API(SrvRegisterConsoleVDM)
     if (RegisterVDMRequest->RegisterFlags != 0)
     {
         LARGE_INTEGER SectionSize;
-        ULONG Size, ViewSize = 0;
+        SIZE_T Size, ViewSize = 0;
         HANDLE ProcessHandle;
 
         /*
@@ -149,6 +150,7 @@ Quit:
     return Status;
 }
 
+/* API_NUMBER: ConsolepVDMOperation */
 CSR_API(SrvVDMConsoleOperation)
 {
     DPRINT1("%s not yet implemented\n", __FUNCTION__);
@@ -160,12 +162,14 @@ CSR_API(SrvVDMConsoleOperation)
  * OS/2 Subsystem
  */
 
+/* API_NUMBER: ConsolepRegisterOS2 */
 CSR_API(SrvRegisterConsoleOS2)
 {
     DPRINT1("%s not yet implemented\n", __FUNCTION__);
     return STATUS_NOT_IMPLEMENTED;
 }
 
+/* API_NUMBER: ConsolepSetOS2OemFormat */
 CSR_API(SrvSetConsoleOS2OemFormat)
 {
     DPRINT1("%s not yet implemented\n", __FUNCTION__);
@@ -177,12 +181,14 @@ CSR_API(SrvSetConsoleOS2OemFormat)
  * IME Subsystem
  */
 
+/* API_NUMBER: ConsolepRegisterConsoleIME */
 CSR_API(SrvRegisterConsoleIME)
 {
     DPRINT1("%s not yet implemented\n", __FUNCTION__);
     return STATUS_NOT_IMPLEMENTED;
 }
 
+/* API_NUMBER: ConsolepUnregisterConsoleIME */
 CSR_API(SrvUnregisterConsoleIME)
 {
     DPRINT1("%s not yet implemented\n", __FUNCTION__);

@@ -291,8 +291,6 @@ struct GpPathGradient{
 
 struct GpLineGradient{
     GpBrush brush;
-    GpPointF startpoint;
-    GpPointF endpoint;
     ARGB startcolor;
     ARGB endcolor;
     RectF rect;
@@ -341,6 +339,9 @@ struct GpCustomLineCap{
 
 struct GpAdjustableArrowCap{
     GpCustomLineCap cap;
+    REAL middle_inset;
+    REAL height;
+    REAL width;
 };
 
 struct GpImage{

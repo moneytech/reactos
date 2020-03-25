@@ -3,7 +3,8 @@
  * PROJECT:          ReactOS kernel
  * PURPOSE:          NtUserCallXxx call stubs
  * FILE:             win32ss/user/ntuser/simplecall.c
- * PROGRAMER:        Ge van Geldorp (ge@gse.nl)
+ * PROGRAMERS:       Ge van Geldorp (ge@gse.nl)
+ *                   Katayama Hirofumi MZ (katayama.hirofumi.mz@gmail.com)
  */
 
 #include <win32k.h>
@@ -341,7 +342,7 @@ NtUserCallOneParam(
         case ONEPARAM_ROUTINE_SETPROCDEFLAYOUT:
         {
             PPROCESSINFO ppi;
-            if (Param & LAYOUT_ORIENTATIONMASK)
+            if (Param & LAYOUT_ORIENTATIONMASK || Param == LAYOUT_LTR)
             {
                 ppi = PsGetCurrentProcessWin32Process();
                 ppi->dwLayout = Param;
@@ -391,7 +392,7 @@ NtUserCallOneParam(
            break;
 
         case ONEPARAM_ROUTINE_CREATESYSTEMTHREADS:
-            Result = CreateSystemThreads(Param);
+            Result = UserSystemThreadProc(Param);
             break;
 
         case ONEPARAM_ROUTINE_LOCKFOREGNDWINDOW:
@@ -505,9 +506,37 @@ NtUserCallTwoParam(
         }
 
         case TWOPARAM_ROUTINE_SWITCHTOTHISWINDOW:
-            STUB
+        {
+            HWND hwnd = (HWND)Param1;
+            BOOL fAltTab = (BOOL)Param2;
             Ret = 0;
+            Window = UserGetWindowObject(hwnd);
+            if (!Window)
+            {
+                break;
+            }
+            if (MsqIsHung(Window->head.pti, MSQ_HUNG))
+            {
+                // TODO: Make the window ghosted and activate.
+                break;
+            }
+            if (fAltTab)
+            {
+                if (Window->style & WS_MINIMIZE)
+                {
+                    UserPostMessage(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+                }
+                /* bring window to top and activate */
+                co_WinPosSetWindowPos(Window, HWND_TOP, 0, 0, 0, 0,
+                                      SWP_NOSIZE | SWP_NOMOVE | SWP_NOSENDCHANGING |
+                                      SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS);
+            }
+            else
+            {
+                UserSetActiveWindow(Window);
+            }
             break;
+        }
 
         case TWOPARAM_ROUTINE_SETCARETPOS:
             Ret = (DWORD_PTR)co_IntSetCaretPos((int)Param1, (int)Param2);

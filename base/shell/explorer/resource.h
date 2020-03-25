@@ -101,6 +101,7 @@
 #define IDS_PROPERTIES                     720
 #define IDS_HELP_COMMAND                   732
 #define IDS_TASKBAR_STARTMENU_PROP_CAPTION 810
+#define IDS_RESTORE_ALL                    811
 
 /*******************************************************************************\
 |*                              Control Resources                              *|
@@ -123,9 +124,11 @@
 
 /* Startmenu Page */
 #define IDC_TASKBARPROP_STARTMENUCLASSICCUST 1130
+#define IDC_TASKBARPROP_STARTMENUMODERNTEXT  1141
 #define IDC_TASKBARPROP_STARTMENUCUST        1131
 #define IDC_TASKBARPROP_STARTMENU            1132
 #define IDC_TASKBARPROP_STARTMENUCLASSIC     1133
+#define IDC_TASKBARPROP_STARTMENUCLASSICTEXT 1142
 #define IDC_TASKBARPROP_STARTMENU_BITMAP     1134
 #define IDC_STARTBTN                         1140
 
@@ -191,3 +194,4 @@
 #define ID_SHELL_CMD_CASCADE_WND        (410)
 #define ID_SHELL_CMD_CUST_NOTIF         (411)
 #define ID_SHELL_CMD_ADJUST_DAT         (412)
+#define ID_SHELL_CMD_RESTORE_ALL        (413)

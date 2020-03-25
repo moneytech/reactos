@@ -178,9 +178,9 @@ MiProtectedPoolRemoveEntryList(IN PLIST_ENTRY Entry)
     if (PoolBlink) MiProtectFreeNonPagedPool(PoolBlink, 1);
 }
 
+INIT_FUNCTION
 VOID
 NTAPI
-INIT_FUNCTION
 MiInitializeNonPagedPoolThresholds(VOID)
 {
     PFN_NUMBER Size = MmMaximumNonPagedPoolInPages;
@@ -195,9 +195,9 @@ MiInitializeNonPagedPoolThresholds(VOID)
     ASSERT(MiLowNonPagedPoolThreshold < MiHighNonPagedPoolThreshold);
 }
 
+INIT_FUNCTION
 VOID
 NTAPI
-INIT_FUNCTION
 MiInitializePoolEvents(VOID)
 {
     KIRQL OldIrql;
@@ -270,9 +270,9 @@ MiInitializePoolEvents(VOID)
     KeReleaseQueuedSpinLock(LockQueueMmNonPagedPoolLock, OldIrql);
 }
 
+INIT_FUNCTION
 VOID
 NTAPI
-INIT_FUNCTION
 MiInitializeNonPagedPool(VOID)
 {
     ULONG i;
@@ -480,7 +480,7 @@ MiAllocatePoolPages(IN POOL_TYPE PoolType,
             //
             // Get the page bit count
             //
-            i = ((SizeInPages - 1) / PTE_COUNT) + 1;
+            i = ((SizeInPages - 1) / PTE_PER_PAGE) + 1;
             DPRINT("Paged pool expansion: %lu %x\n", i, SizeInPages);
 
             //
@@ -550,7 +550,13 @@ MiAllocatePoolPages(IN POOL_TYPE PoolType,
                 TempPde.u.Hard.PageFrameNumber = PageFrameNumber;
 #if (_MI_PAGING_LEVELS >= 3)
                 /* On PAE/x64 systems, there's no double-buffering */
-                ASSERT(FALSE);
+                /* Initialize the PFN entry for it */
+                MiInitializePfnForOtherProcess(PageFrameNumber,
+                                               (PMMPTE)PointerPde,
+                                               PFN_FROM_PTE(MiAddressToPte(PointerPde)));
+
+                /* Write the actual PDE now */
+                MI_WRITE_VALID_PDE(PointerPde, TempPde);
 #else
                 //
                 // Save it into our double-buffered system page directory
@@ -560,11 +566,9 @@ MiAllocatePoolPages(IN POOL_TYPE PoolType,
                 /* Initialize the PFN */
                 MiInitializePfnForOtherProcess(PageFrameNumber,
                                                (PMMPTE)PointerPde,
-                                               MmSystemPageDirectory[(PointerPde - MiAddressToPde(NULL)) / PDE_COUNT]);
-
-                /* Write the actual PDE now */
-//                MI_WRITE_VALID_PDE(PointerPde, TempPde);
+                                               MmSystemPageDirectory[(PointerPde - MiAddressToPde(NULL)) / PDE_PER_PAGE]);
 #endif
+
                 //
                 // Move on to the next expansion address
                 //
@@ -582,11 +586,11 @@ MiAllocatePoolPages(IN POOL_TYPE PoolType,
             // These pages are now available, clear their availablity bits
             //
             EndAllocation = (ULONG)(MmPagedPoolInfo.NextPdeForPagedPoolExpansion -
-                             (PMMPDE)MiAddressToPte(MmPagedPoolInfo.FirstPteForPagedPool)) *
-                             PTE_COUNT;
+                                    (PMMPDE)MiAddressToPte(MmPagedPoolInfo.FirstPteForPagedPool)) *
+                            PTE_PER_PAGE;
             RtlClearBits(MmPagedPoolInfo.PagedPoolAllocationMap,
                          EndAllocation,
-                         PageTableCount * PTE_COUNT);
+                         PageTableCount * PTE_PER_PAGE);
 
             //
             // Update the next expansion location

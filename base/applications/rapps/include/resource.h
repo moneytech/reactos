@@ -31,6 +31,7 @@
 #define IDI_CAT_SCIENCE          62
 #define IDI_CAT_TOOLS            63
 #define IDI_CAT_VIDEO            64
+#define IDI_CAT_THEMES           65
 
 /* Bitmaps */
 
@@ -79,6 +80,7 @@
 #define ID_REGREMOVE             560
 #define ID_RESETDB               561
 #define ID_CHECK_ALL             562
+#define ID_SEARCH                563
 
 /* Strings */
 #define IDS_APPTITLE             100
@@ -175,6 +177,7 @@
 #define IDS_CAT_SCIENCE          712
 #define IDS_CAT_TOOLS            713
 #define IDS_CAT_VIDEO            714
+#define IDS_CAT_THEMES           715
 
 /* App installation status */
 #define IDS_STATUS_INSTALLED          800

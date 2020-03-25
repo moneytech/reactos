@@ -27,9 +27,6 @@
 #include "windef.h"
 #include "winbase.h"
 #define USE_COM_CONTEXT_DEF
-#ifndef __REACTOS__
-#include "initguid.h"
-#endif
 #include "objbase.h"
 #include "shlguid.h"
 #include "urlmon.h" /* for CLSID_FileProtocol */
@@ -39,13 +36,10 @@
 #include "ctxtcall.h"
 
 #include "wine/test.h"
-
-#ifdef __REACTOS__
-#include <initguid.h>
-#endif
+#include "initguid.h"
 
 #define DEFINE_EXPECT(func) \
-    static BOOL expect_ ## func = FALSE, called_ ## func = FALSE
+    static BOOL expect_ ## func = FALSE; static unsigned int called_ ## func = 0
 
 #define SET_EXPECT(func) \
     expect_ ## func = TRUE
@@ -53,7 +47,7 @@
 #define CHECK_EXPECT2(func) \
     do { \
         ok(expect_ ##func, "unexpected call " #func "\n"); \
-        called_ ## func = TRUE; \
+        called_ ## func++; \
     }while(0)
 
 #define CHECK_EXPECT(func) \
@@ -62,13 +56,18 @@
         expect_ ## func = FALSE; \
     }while(0)
 
-#define CHECK_CALLED(func) \
+#define CHECK_CALLED(func, n) \
     do { \
-        ok(called_ ## func, "expected " #func "\n"); \
-        expect_ ## func = called_ ## func = FALSE; \
+        ok(called_ ## func == n, "expected " #func " called %u times, got %u\n", n, called_ ## func); \
+        expect_ ## func = FALSE; \
+        called_ ## func = 0; \
     }while(0)
 
 DEFINE_EXPECT(CreateStub);
+DEFINE_EXPECT(PreInitialize);
+DEFINE_EXPECT(PostInitialize);
+DEFINE_EXPECT(PreUninitialize);
+DEFINE_EXPECT(PostUninitialize);
 
 /* functions that are not present on all versions of Windows */
 static HRESULT (WINAPI * pCoInitializeEx)(LPVOID lpReserved, DWORD dwCoInit);
@@ -101,9 +100,7 @@ static const GUID IID_Testiface5 = { 0x62222222, 0x1234, 0x1234, { 0x12, 0x34, 0
 static const GUID IID_Testiface6 = { 0x72222222, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0 } };
 static const GUID IID_TestPS = { 0x66666666, 0x8888, 0x7777, { 0x66, 0x66, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55 } };
 
-DEFINE_GUID(CLSID_InProcFreeMarshaler, 0x0000033a,0x0000,0x0000,0xc0,0x00,0x00,0x00,0x00,0x00,0x00,0x46);
 DEFINE_GUID(CLSID_testclsid, 0xacd014c7,0x9535,0x4fac,0x8b,0x53,0xa4,0x8c,0xa7,0xf4,0xd7,0x26);
-DEFINE_GUID(CLSID_GlobalOptions, 0x0000034b,0x0000,0x0000,0xc0,0x00,0x00,0x00,0x00,0x00,0x00,0x46);
 
 static const WCHAR stdfont[] = {'S','t','d','F','o','n','t',0};
 static const WCHAR wszNonExistent[] = {'N','o','n','E','x','i','s','t','e','n','t',0};
@@ -203,7 +200,7 @@ static BOOL create_manifest_file(const char *filename, const char *manifest)
     WCHAR path[MAX_PATH];
 
     MultiByteToWideChar( CP_ACP, 0, filename, -1, path, MAX_PATH );
-    GetFullPathNameW(path, sizeof(manifest_path)/sizeof(WCHAR), manifest_path, NULL);
+    GetFullPathNameW(path, ARRAY_SIZE(manifest_path), manifest_path, NULL);
 
     manifest_len = strlen(manifest);
     file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
@@ -608,28 +605,8 @@ static void test_StringFromGUID2(void)
   ok(len == 0, "len: %d (expected 0)\n", len);
 }
 
-struct info
-{
-    HANDLE wait, stop;
-};
-
-static DWORD CALLBACK ole_initialize_thread(LPVOID pv)
-{
-    HRESULT hr;
-    struct info *info = pv;
-
-    hr = pCoInitializeEx(NULL, COINIT_MULTITHREADED);
-
-    SetEvent(info->wait);
-    WaitForSingleObject(info->stop, 10000);
-
-    CoUninitialize();
-    return hr;
-}
-
-#define test_apt_type(t, q, t_t, t_q) _test_apt_type(t, q, t_t, t_q, __LINE__)
-static void _test_apt_type(APTTYPE expected_type, APTTYPEQUALIFIER expected_qualifier, BOOL todo_type,
-        BOOL todo_qualifier, int line)
+#define test_apt_type(t, q) _test_apt_type(t, q, __LINE__)
+static void _test_apt_type(APTTYPE expected_type, APTTYPEQUALIFIER expected_qualifier, int line)
 {
     APTTYPEQUALIFIER qualifier = ~0u;
     APTTYPE type = ~0u;
@@ -640,9 +617,7 @@ static void _test_apt_type(APTTYPE expected_type, APTTYPEQUALIFIER expected_qual
 
     hr = pCoGetApartmentType(&type, &qualifier);
     ok_(__FILE__, line)(hr == S_OK || hr == CO_E_NOTINITIALIZED, "Unexpected return code: 0x%08x\n", hr);
-todo_wine_if(todo_type)
     ok_(__FILE__, line)(type == expected_type, "Wrong apartment type %d, expected %d\n", type, expected_type);
-todo_wine_if(todo_qualifier)
     ok_(__FILE__, line)(qualifier == expected_qualifier, "Wrong apartment qualifier %d, expected %d\n", qualifier,
         expected_qualifier);
 }
@@ -650,10 +625,7 @@ todo_wine_if(todo_qualifier)
 static void test_CoCreateInstance(void)
 {
     HRESULT hr;
-    HANDLE thread;
-    DWORD tid, exitcode;
     IUnknown *pUnk;
-    struct info info;
     REFCLSID rclsid = &CLSID_InternetZoneManager;
 
     pUnk = (IUnknown *)0xdeadbeef;
@@ -688,51 +660,15 @@ static void test_CoCreateInstance(void)
     hr = CoCreateInstance(rclsid, NULL, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void **)&pUnk);
     ok(hr == CO_E_NOTINITIALIZED, "CoCreateInstance should have returned CO_E_NOTINITIALIZED instead of 0x%08x\n", hr);
 
-    /* show that COM doesn't have to be initialized for multi-threaded apartments if another
-       thread has already done so */
-
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
-
-    info.wait = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.wait != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    info.stop = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.stop != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    thread = CreateThread(NULL, 0, ole_initialize_thread, &info, 0, &tid);
-    ok(thread != NULL, "CreateThread failed with error %d\n", GetLastError());
-
-    ok( !WaitForSingleObject(info.wait, 10000 ), "wait timed out\n" );
-
-    test_apt_type(APTTYPE_MTA, APTTYPEQUALIFIER_IMPLICIT_MTA, TRUE, TRUE);
-
-    pUnk = (IUnknown *)0xdeadbeef;
-    hr = CoCreateInstance(rclsid, NULL, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void **)&pUnk);
-    ok(hr == S_OK, "CoCreateInstance should have returned S_OK instead of 0x%08x\n", hr);
-    if (pUnk) IUnknown_Release(pUnk);
-
-    SetEvent(info.stop);
-    ok( !WaitForSingleObject(thread, 10000), "wait timed out\n" );
-
-    GetExitCodeThread(thread, &exitcode);
-    hr = exitcode;
-    ok(hr == S_OK, "thread should have returned S_OK instead of 0x%08x\n", hr);
-
-    CloseHandle(thread);
-    CloseHandle(info.wait);
-    CloseHandle(info.stop);
-
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
+    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE);
 }
 
 static void test_CoGetClassObject(void)
 {
     HRESULT hr;
-    HANDLE thread, handle;
-    DWORD tid, exitcode;
+    HANDLE handle;
     ULONG_PTR cookie;
     IUnknown *pUnk;
-    struct info info;
     REFCLSID rclsid = &CLSID_InternetZoneManager;
     HKEY hkey;
     LONG res;
@@ -746,46 +682,7 @@ static void test_CoGetClassObject(void)
        broken(hr == CO_E_NOTINITIALIZED), /* win9x */
        "CoGetClassObject should have returned E_INVALIDARG instead of 0x%08x\n", hr);
 
-    /* show that COM doesn't have to be initialized for multi-threaded apartments if another
-       thread has already done so */
-
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
-
-    info.wait = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.wait != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    info.stop = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.stop != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    thread = CreateThread(NULL, 0, ole_initialize_thread, &info, 0, &tid);
-    ok(thread != NULL, "CreateThread failed with error %d\n", GetLastError());
-
-    ok( !WaitForSingleObject(info.wait, 10000), "wait timed out\n" );
-
-    test_apt_type(APTTYPE_MTA, APTTYPEQUALIFIER_IMPLICIT_MTA, TRUE, TRUE);
-
-    pUnk = (IUnknown *)0xdeadbeef;
-    hr = CoGetClassObject(rclsid, CLSCTX_INPROC_SERVER, NULL, &IID_IUnknown, (void **)&pUnk);
-    if(hr == REGDB_E_CLASSNOTREG)
-        skip("IE not installed so can't test CoGetClassObject\n");
-    else
-    {
-        ok(hr == S_OK, "CoGetClassObject should have returned S_OK instead of 0x%08x\n", hr);
-        if (pUnk) IUnknown_Release(pUnk);
-    }
-
-    SetEvent(info.stop);
-    ok( !WaitForSingleObject(thread, 10000), "wait timed out\n" );
-
-    GetExitCodeThread(thread, &exitcode);
-    hr = exitcode;
-    ok(hr == S_OK, "thread should have returned S_OK instead of 0x%08x\n", hr);
-
-    CloseHandle(thread);
-    CloseHandle(info.wait);
-    CloseHandle(info.stop);
-
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
+    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE);
 
     if (!pRegOverridePredefKey)
     {
@@ -896,7 +793,7 @@ static HRESULT WINAPI MessageFilter_QueryInterface(IMessageFilter *iface, REFIID
     if (ppvObj == NULL) return E_POINTER;
 
     if (IsEqualGUID(riid, &IID_IUnknown) ||
-        IsEqualGUID(riid, &IID_IClassFactory))
+        IsEqualGUID(riid, &IID_IMessageFilter))
     {
         *ppvObj = iface;
         IMessageFilter_AddRef(iface);
@@ -944,6 +841,7 @@ static DWORD WINAPI MessageFilter_MessagePending(
   DWORD dwPendingType)
 {
     trace("MessagePending\n");
+    ros_skip_flaky
     todo_wine ok(0, "unexpected call\n");
     return PENDINGMSG_WAITNOPROCESS;
 }
@@ -1139,7 +1037,7 @@ static HRESULT WINAPI PSFactoryBuffer_CreateStub(
 {
     CHECK_EXPECT(CreateStub);
 
-    ok(pUnkServer == (IUnknown*)&Test_Unknown, "unexpected pUnkServer %p\n", pUnkServer);
+    ok(pUnkServer == &Test_Unknown, "unexpected pUnkServer %p\n", pUnkServer);
     if(!ps_factory_buffer)
         return E_NOTIMPL;
 
@@ -1228,7 +1126,7 @@ static void test_CoRegisterPSClsid(void)
     SET_EXPECT(CreateStub);
     hr = CoMarshalInterface(stream, &IID_IWineTest, &Test_Unknown, MSHCTX_INPROC, NULL, MSHLFLAGS_NORMAL);
     ok(hr == E_NOTIMPL, "CoMarshalInterface should have returned E_NOTIMPL instead of 0x%08x\n", hr);
-    CHECK_CALLED(CreateStub);
+    CHECK_CALLED(CreateStub, 1);
 
     hr = CoGetPSClsid(&IID_IEnumOLEVERB, &clsid);
     ok_ole_success(hr, "CoGetPSClsid");
@@ -1242,7 +1140,7 @@ static void test_CoRegisterPSClsid(void)
     SET_EXPECT(CreateStub);
     hr = CoMarshalInterface(stream, &IID_IEnumOLEVERB, (IUnknown*)&EnumOLEVERB, MSHCTX_INPROC, NULL, MSHLFLAGS_NORMAL);
     ok(hr == S_OK, "CoMarshalInterface should have returned S_OK instead of 0x%08x\n", hr);
-    CHECK_CALLED(CreateStub);
+    CHECK_CALLED(CreateStub, 1);
 
     hr = CoMarshalInterface(stream, &IID_IEnumOLEVERB, &Test_Unknown, MSHCTX_INPROC, NULL, MSHLFLAGS_NORMAL);
     ok(hr == S_OK, "CoMarshalInterface should have returned S_OK instead of 0x%08x\n", hr);
@@ -1886,9 +1784,6 @@ static void test_CoGetObjectContext(void)
     IObjContext *pObjContext;
     APTTYPE apttype;
     THDTYPE thdtype;
-    struct info info;
-    HANDLE thread;
-    DWORD tid, exitcode;
     GUID id, id2;
 
     if (!pCoGetObjectContext)
@@ -1901,27 +1796,12 @@ static void test_CoGetObjectContext(void)
     ok(hr == CO_E_NOTINITIALIZED, "CoGetObjectContext should have returned CO_E_NOTINITIALIZED instead of 0x%08x\n", hr);
     ok(pComThreadingInfo == NULL, "pComThreadingInfo should have been set to NULL\n");
 
-    /* show that COM doesn't have to be initialized for multi-threaded apartments if another
-       thread has already done so */
+    pCoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
+    test_apt_type(APTTYPE_MAINSTA, APTTYPEQUALIFIER_NONE);
 
-    info.wait = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.wait != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    info.stop = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.stop != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    thread = CreateThread(NULL, 0, ole_initialize_thread, &info, 0, &tid);
-    ok(thread != NULL, "CreateThread failed with error %d\n", GetLastError());
-
-    ok( !WaitForSingleObject(info.wait, 10000), "wait timed out\n" );
-
-    test_apt_type(APTTYPE_MTA, APTTYPEQUALIFIER_IMPLICIT_MTA, TRUE, TRUE);
-
-    pComThreadingInfo = NULL;
     hr = pCoGetObjectContext(&IID_IComThreadingInfo, (void **)&pComThreadingInfo);
-    ok(hr == S_OK, "Expected S_OK, got 0x%08x\n", hr);
+    ok_ole_success(hr, "CoGetObjectContext");
 
     threadinginfo2 = NULL;
     hr = pCoGetObjectContext(&IID_IComThreadingInfo, (void **)&threadinginfo2);
@@ -1938,28 +1818,6 @@ static void test_CoGetObjectContext(void)
 
     hr = CoGetCurrentLogicalThreadId(&id2);
     ok(IsEqualGUID(&id, &id2), "got %s, expected %s\n", wine_dbgstr_guid(&id), wine_dbgstr_guid(&id2));
-
-    IComThreadingInfo_Release(pComThreadingInfo);
-
-    SetEvent(info.stop);
-    ok( !WaitForSingleObject(thread, 10000), "wait timed out\n" );
-
-    GetExitCodeThread(thread, &exitcode);
-    hr = exitcode;
-    ok(hr == S_OK, "thread should have returned S_OK instead of 0x%08x\n", hr);
-
-    CloseHandle(thread);
-    CloseHandle(info.wait);
-    CloseHandle(info.stop);
-
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
-
-    pCoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-
-    test_apt_type(APTTYPE_MAINSTA, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
-
-    hr = pCoGetObjectContext(&IID_IComThreadingInfo, (void **)&pComThreadingInfo);
-    ok_ole_success(hr, "CoGetObjectContext");
 
     hr = IComThreadingInfo_GetCurrentApartmentType(pComThreadingInfo, &apttype);
     ok_ole_success(hr, "IComThreadingInfo_GetCurrentApartmentType");
@@ -2124,9 +1982,6 @@ static void test_CoGetContextToken(void)
     ULONG refs;
     ULONG_PTR token, token2;
     IObjContext *ctx;
-    struct info info;
-    HANDLE thread;
-    DWORD tid, exitcode;
 
     if (!pCoGetContextToken)
     {
@@ -2139,49 +1994,11 @@ static void test_CoGetContextToken(void)
     ok(hr == CO_E_NOTINITIALIZED, "Expected CO_E_NOTINITIALIZED, got 0x%08x\n", hr);
     ok(token == 0xdeadbeef, "Expected 0, got 0x%lx\n", token);
 
-    /* show that COM doesn't have to be initialized for multi-threaded apartments if another
-       thread has already done so */
-
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
-
-    info.wait = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.wait != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    info.stop = CreateEventA(NULL, TRUE, FALSE, NULL);
-    ok(info.stop != NULL, "CreateEvent failed with error %d\n", GetLastError());
-
-    thread = CreateThread(NULL, 0, ole_initialize_thread, &info, 0, &tid);
-    ok(thread != NULL, "CreateThread failed with error %d\n", GetLastError());
-
-    ok( !WaitForSingleObject(info.wait, 10000), "wait timed out\n" );
-
-    test_apt_type(APTTYPE_MTA, APTTYPEQUALIFIER_IMPLICIT_MTA, TRUE, TRUE);
-
-    token = 0;
-    hr = pCoGetContextToken(&token);
-    ok(hr == S_OK, "Expected S_OK, got 0x%08x\n", hr);
-
-    token2 = 0;
-    hr = pCoGetContextToken(&token2);
-    ok(hr == S_OK, "Expected S_OK, got 0x%08x\n", hr);
-    ok(token == token2, "got different token\n");
-
-    SetEvent(info.stop);
-    ok( !WaitForSingleObject(thread, 10000), "wait timed out\n" );
-
-    GetExitCodeThread(thread, &exitcode);
-    hr = exitcode;
-    ok(hr == S_OK, "thread should have returned S_OK instead of 0x%08x\n", hr);
-
-    CloseHandle(thread);
-    CloseHandle(info.wait);
-    CloseHandle(info.stop);
-
-    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
+    test_apt_type(APTTYPE_CURRENT, APTTYPEQUALIFIER_NONE);
 
     CoInitialize(NULL);
 
-    test_apt_type(APTTYPE_MAINSTA, APTTYPEQUALIFIER_NONE, FALSE, FALSE);
+    test_apt_type(APTTYPE_MAINSTA, APTTYPEQUALIFIER_NONE);
 
     hr = pCoGetContextToken(NULL);
     ok(hr == E_POINTER, "Expected E_POINTER, got 0x%08x\n", hr);
@@ -2521,7 +2338,7 @@ static void test_OleRegGetUserType(void)
     }
 
     /* test using registered CLSID */
-    StringFromGUID2(&CLSID_non_existent, clsidW, sizeof(clsidW)/sizeof(clsidW[0]));
+    StringFromGUID2(&CLSID_non_existent, clsidW, ARRAY_SIZE(clsidW));
 
     ret = RegCreateKeyExW(HKEY_CLASSES_ROOT, clsidkeyW, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &clsidhkey, &disposition);
     if (!ret)
@@ -2709,7 +2526,7 @@ static void flush_messages(void)
 
 static LRESULT CALLBACK cowait_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
-    if(cowait_msgs_last < sizeof(cowait_msgs)/sizeof(*cowait_msgs))
+    if(cowait_msgs_last < ARRAY_SIZE(cowait_msgs))
         cowait_msgs[cowait_msgs_last++] = msg;
     if(msg == WM_DDE_FIRST)
         return 6;
@@ -3185,14 +3002,36 @@ static void test_CoWaitForMultipleHandles(void)
     ok(index == WAIT_OBJECT_0, "WaitForSingleObject failed\n");
     CloseHandle(thread);
 
+    CoUninitialize();
+
+    /* If COM was not initialized, messages are neither pumped nor peeked at */
+    PostMessageA(hWnd, WM_DDE_FIRST, 0, 0);
+    hr = CoWaitForMultipleHandles(0, 100, 2, handles, &index);
+    ok(hr == RPC_S_CALLPENDING, "got %#x\n", hr);
+    success = MsgWaitForMultipleObjectsEx(0, NULL, 2, QS_ALLPOSTMESSAGE, MWMO_ALERTABLE);
+    ok(success == 0, "MsgWaitForMultipleObjects returned %x\n", success);
+    success = PeekMessageA(&msg, hWnd, WM_DDE_FIRST, WM_DDE_FIRST, PM_REMOVE);
+    ok(success, "PeekMessage failed: %u\n", GetLastError());
+
+    /* same in an MTA */
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    PostMessageA(hWnd, WM_DDE_FIRST, 0, 0);
+    hr = CoWaitForMultipleHandles(0, 100, 2, handles, &index);
+    ok(hr == RPC_S_CALLPENDING, "got %#x\n", hr);
+    success = MsgWaitForMultipleObjectsEx(0, NULL, 2, QS_ALLPOSTMESSAGE, MWMO_ALERTABLE);
+    ok(success == 0, "MsgWaitForMultipleObjects returned %x\n", success);
+    success = PeekMessageA(&msg, hWnd, WM_DDE_FIRST, WM_DDE_FIRST, PM_REMOVE);
+    ok(success, "PeekMessage failed: %u\n", GetLastError());
+
+    CoUninitialize();
+
     CloseHandle(handles[0]);
     CloseHandle(handles[1]);
     DestroyWindow(hWnd);
 
     success = UnregisterClassA(cls_name, GetModuleHandleA(0));
     ok(success, "UnregisterClass failed %u\n", GetLastError());
-
-    CoUninitialize();
 }
 
 static void test_CoGetMalloc(void)
@@ -3473,27 +3312,47 @@ static ULONG WINAPI testinitialize_Release(IInitializeSpy *iface)
     return 1;
 }
 
+static DWORD expected_coinit_flags;
+static ULARGE_INTEGER init_cookies[3];
+static BOOL revoke_spies_on_uninit;
+
 static HRESULT WINAPI testinitialize_PreInitialize(IInitializeSpy *iface, DWORD coinit, DWORD aptrefs)
 {
-    ok(0, "unexpected call\n");
-    return E_NOTIMPL;
+    CHECK_EXPECT2(PreInitialize);
+    ok(coinit == expected_coinit_flags, "Unexpected init flags %#x, expected %#x.\n", coinit, expected_coinit_flags);
+    return S_OK;
 }
 
 static HRESULT WINAPI testinitialize_PostInitialize(IInitializeSpy *iface, HRESULT hr, DWORD coinit, DWORD aptrefs)
 {
-    ok(0, "unexpected call\n");
-    return E_NOTIMPL;
+    CHECK_EXPECT2(PostInitialize);
+    ok(coinit == expected_coinit_flags, "Unexpected init flags %#x, expected %#x.\n", coinit, expected_coinit_flags);
+    return hr;
 }
 
 static HRESULT WINAPI testinitialize_PreUninitialize(IInitializeSpy *iface, DWORD aptrefs)
 {
-    ok(0, "unexpected call\n");
-    return E_NOTIMPL;
+    HRESULT hr;
+    CHECK_EXPECT2(PreUninitialize);
+    if (revoke_spies_on_uninit)
+    {
+        hr = CoRevokeInitializeSpy(init_cookies[0]);
+        ok(hr == S_OK, "got 0x%08x\n", hr);
+
+        hr = CoRevokeInitializeSpy(init_cookies[1]);
+        ok(hr == S_OK, "got 0x%08x\n", hr);
+
+        hr = CoRevokeInitializeSpy(init_cookies[2]);
+        ok(hr == S_OK, "got 0x%08x\n", hr);
+
+        revoke_spies_on_uninit = FALSE;
+    }
+    return S_OK;
 }
 
 static HRESULT WINAPI testinitialize_PostUninitialize(IInitializeSpy *iface, DWORD aptrefs)
 {
-    ok(0, "unexpected call\n");
+    CHECK_EXPECT2(PostUninitialize);
     return E_NOTIMPL;
 }
 
@@ -3510,76 +3369,134 @@ static const IInitializeSpyVtbl testinitializevtbl =
 
 static IInitializeSpy testinitialize = { &testinitializevtbl };
 
-static void test_IInitializeSpy(void)
+static DWORD WINAPI test_init_spies_proc(void *arg)
 {
-    ULARGE_INTEGER cookie, cookie1, cookie2;
     HRESULT hr;
+
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
+    ok(hr == S_OK, "Failed to initialize COM, hr %#x.\n", hr);
+
+    hr = CoRevokeInitializeSpy(init_cookies[2]);
+    ok(hr == E_INVALIDARG, "got 0x%08x\n", hr);
+
+    CoUninitialize();
+    return 0;
+}
+
+static void test_IInitializeSpy(BOOL mt)
+{
+    HRESULT hr;
+
+    if (mt)
+    {
+        hr = pCoInitializeEx(NULL, COINIT_MULTITHREADED);
+        ok(hr == S_OK, "CoInitializeEx failed: %#x\n", hr);
+    }
 
     hr = CoRegisterInitializeSpy(NULL, NULL);
     ok(hr == E_INVALIDARG, "got 0x%08x\n", hr);
 
-    cookie.QuadPart = 1;
-    hr = CoRegisterInitializeSpy(NULL, &cookie);
+    init_cookies[0].QuadPart = 1;
+    hr = CoRegisterInitializeSpy(NULL, &init_cookies[0]);
     ok(hr == E_INVALIDARG, "got 0x%08x\n", hr);
-    ok(cookie.QuadPart == 1, "got wrong cookie\n");
+    ok(init_cookies[0].QuadPart == 1, "got wrong cookie\n");
 
     hr = CoRegisterInitializeSpy(&testinitialize, NULL);
     ok(hr == E_INVALIDARG, "got 0x%08x\n", hr);
 
-    cookie.HighPart = 0;
-    cookie.LowPart = 1;
-    hr = CoRegisterInitializeSpy(&testinitialize, &cookie);
+    init_cookies[0].HighPart = 0;
+    init_cookies[0].LowPart = 1;
+    hr = CoRegisterInitializeSpy(&testinitialize, &init_cookies[0]);
     ok(hr == S_OK, "got 0x%08x\n", hr);
-todo_wine {
-    ok(cookie.HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", cookie.HighPart,
+    ok(init_cookies[0].HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", init_cookies[0].HighPart,
         GetCurrentThreadId());
-    ok(cookie.LowPart == 0, "got wrong low part 0x%x\n", cookie.LowPart);
-}
+    if (!mt) ok(init_cookies[0].LowPart == 0, "got wrong low part 0x%x\n", init_cookies[0].LowPart);
+
     /* register same instance one more time */
-    cookie1.HighPart = 0;
-    cookie1.LowPart = 0;
-    hr = CoRegisterInitializeSpy(&testinitialize, &cookie1);
-todo_wine {
+    init_cookies[1].HighPart = 0;
+    init_cookies[1].LowPart = 0;
+    hr = CoRegisterInitializeSpy(&testinitialize, &init_cookies[1]);
     ok(hr == S_OK, "got 0x%08x\n", hr);
-    ok(cookie1.HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", cookie1.HighPart,
+    ok(init_cookies[1].HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", init_cookies[1].HighPart,
         GetCurrentThreadId());
-    ok(cookie1.LowPart == 1, "got wrong low part 0x%x\n", cookie1.LowPart);
-}
-    cookie2.HighPart = 0;
-    cookie2.LowPart = 0;
-    hr = CoRegisterInitializeSpy(&testinitialize, &cookie2);
-todo_wine {
+    if (!mt) ok(init_cookies[1].LowPart == 1, "got wrong low part 0x%x\n", init_cookies[1].LowPart);
+
+    init_cookies[2].HighPart = 0;
+    init_cookies[2].LowPart = 0;
+    hr = CoRegisterInitializeSpy(&testinitialize, &init_cookies[2]);
     ok(hr == S_OK, "got 0x%08x\n", hr);
-    ok(cookie2.HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", cookie2.HighPart,
+    ok(init_cookies[2].HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", init_cookies[2].HighPart,
         GetCurrentThreadId());
-    ok(cookie2.LowPart == 2, "got wrong low part 0x%x\n", cookie2.LowPart);
-}
-    hr = CoRevokeInitializeSpy(cookie1);
-todo_wine
+    if (!mt) ok(init_cookies[2].LowPart == 2, "got wrong low part 0x%x\n", init_cookies[2].LowPart);
+
+    hr = CoRevokeInitializeSpy(init_cookies[1]);
     ok(hr == S_OK, "got 0x%08x\n", hr);
 
-    hr = CoRevokeInitializeSpy(cookie1);
+    hr = CoRevokeInitializeSpy(init_cookies[1]);
     ok(hr == E_INVALIDARG, "got 0x%08x\n", hr);
 
-    cookie1.HighPart = 0;
-    cookie1.LowPart = 0;
-    hr = CoRegisterInitializeSpy(&testinitialize, &cookie1);
-todo_wine {
+    init_cookies[1].HighPart = 0;
+    init_cookies[1].LowPart = 0;
+    hr = CoRegisterInitializeSpy(&testinitialize, &init_cookies[1]);
     ok(hr == S_OK, "got 0x%08x\n", hr);
-    ok(cookie1.HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", cookie1.HighPart,
+    ok(init_cookies[1].HighPart == GetCurrentThreadId(), "got high part 0x%08x, expected 0x%08x\n", init_cookies[1].HighPart,
         GetCurrentThreadId());
-    ok(cookie1.LowPart == 1, "got wrong low part 0x%x\n", cookie1.LowPart);
-}
-    hr = CoRevokeInitializeSpy(cookie);
-    ok(hr == S_OK, "got 0x%08x\n", hr);
+    if (!mt) ok(init_cookies[1].LowPart == 1, "got wrong low part 0x%x\n", init_cookies[1].LowPart);
 
-    hr = CoRevokeInitializeSpy(cookie1);
-todo_wine
-    ok(hr == S_OK, "got 0x%08x\n", hr);
+    SET_EXPECT(PreInitialize);
+    SET_EXPECT(PostInitialize);
+    hr = CoInitializeEx(NULL, expected_coinit_flags = ((mt ? COINIT_MULTITHREADED : COINIT_APARTMENTTHREADED) | COINIT_DISABLE_OLE1DDE));
+    ok(hr == (mt ? S_FALSE : S_OK), "Failed to initialize COM, hr %#x.\n", hr);
+    CHECK_CALLED(PreInitialize, 3);
+    CHECK_CALLED(PostInitialize, 3);
 
-    hr = CoRevokeInitializeSpy(cookie2);
-todo_wine
-    ok(hr == S_OK, "got 0x%08x\n", hr);
+    if (mt)
+    {
+        HANDLE thread;
+        thread = CreateThread(NULL, 0, test_init_spies_proc, NULL, 0, NULL);
+        ok(thread != NULL, "CreateThread failed: %u\n", GetLastError());
+        ok(!WaitForSingleObject(thread, 1000), "wait failed\n");
+    }
+
+    SET_EXPECT(PreInitialize);
+    SET_EXPECT(PostInitialize);
+    hr = CoInitializeEx(NULL, expected_coinit_flags = ((mt ? COINIT_MULTITHREADED : COINIT_APARTMENTTHREADED) | COINIT_DISABLE_OLE1DDE));
+    ok(hr == S_FALSE, "Failed to initialize COM, hr %#x.\n", hr);
+    CHECK_CALLED(PreInitialize, 3);
+    CHECK_CALLED(PostInitialize, 3);
+
+    SET_EXPECT(PreUninitialize);
+    SET_EXPECT(PostUninitialize);
+    CoUninitialize();
+    CHECK_CALLED(PreUninitialize, 3);
+    CHECK_CALLED(PostUninitialize, 3);
+
+    SET_EXPECT(PreUninitialize);
+    SET_EXPECT(PostUninitialize);
+    CoUninitialize();
+    CHECK_CALLED(PreUninitialize, 3);
+    CHECK_CALLED(PostUninitialize, 3);
+
+    if (mt)
+    {
+        SET_EXPECT(PreUninitialize);
+        SET_EXPECT(PostUninitialize);
+        CoUninitialize();
+        CHECK_CALLED(PreUninitialize, 3);
+        CHECK_CALLED(PostUninitialize, 3);
+    }
+
+    SET_EXPECT(PreInitialize);
+    SET_EXPECT(PostInitialize);
+    hr = CoInitializeEx(NULL, expected_coinit_flags = ((mt ? COINIT_MULTITHREADED : COINIT_APARTMENTTHREADED) | COINIT_DISABLE_OLE1DDE));
+    ok(hr == S_OK, "Failed to initialize COM, hr %#x.\n", hr);
+    CHECK_CALLED(PreInitialize, 3);
+    CHECK_CALLED(PostInitialize, 3);
+
+    SET_EXPECT(PreUninitialize);
+    revoke_spies_on_uninit = TRUE;
+    CoUninitialize();
+    CHECK_CALLED(PreUninitialize, 1);
 }
 
 static HRESULT g_persistfile_qi_ret;
@@ -3880,6 +3797,71 @@ static void init_funcs(void)
     pReleaseActCtx = (void*)GetProcAddress(hkernel32, "ReleaseActCtx");
 }
 
+static DWORD CALLBACK implicit_mta_proc(void *param)
+{
+    IComThreadingInfo *threading_info;
+    ULONG_PTR token;
+    IUnknown *unk;
+    DWORD cookie;
+    CLSID clsid;
+    HRESULT hr;
+
+    test_apt_type(APTTYPE_MTA, APTTYPEQUALIFIER_IMPLICIT_MTA);
+
+    hr = CoCreateInstance(&CLSID_InternetZoneManager, NULL, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void **)&unk);
+    ok_ole_success(hr, "CoCreateInstance");
+    IUnknown_Release(unk);
+
+    hr = CoGetClassObject(&CLSID_InternetZoneManager, CLSCTX_INPROC_SERVER, NULL, &IID_IUnknown, (void **)&unk);
+    ok_ole_success(hr, "CoGetClassObject");
+    IUnknown_Release(unk);
+
+    hr = CoGetObjectContext(&IID_IComThreadingInfo, (void **)&threading_info);
+    ok_ole_success(hr, "CoGetObjectContext");
+    IComThreadingInfo_Release(threading_info);
+
+    hr = CoGetContextToken(&token);
+    ok_ole_success(hr, "CoGetContextToken");
+
+    hr = CoRegisterPSClsid(&IID_IWineTest, &CLSID_WineTestPSFactoryBuffer);
+    ok_ole_success(hr, "CoRegisterPSClsid");
+
+    hr = CoGetPSClsid(&IID_IClassFactory, &clsid);
+    ok_ole_success(hr, "CoGetPSClsid");
+
+    hr = CoRegisterClassObject(&CLSID_WineOOPTest, (IUnknown *)&Test_ClassFactory,
+                               CLSCTX_INPROC_SERVER, REGCLS_SINGLEUSE, &cookie);
+    ok_ole_success(hr, "CoRegisterClassObject");
+
+    hr = CoRevokeClassObject(cookie);
+    ok_ole_success(hr, "CoRevokeClassObject");
+
+    hr = CoRegisterMessageFilter(NULL, NULL);
+    ok(hr == CO_E_NOT_SUPPORTED, "got %#x\n", hr);
+
+    hr = CoLockObjectExternal(&Test_Unknown, TRUE, TRUE);
+    ok_ole_success(hr, "CoLockObjectExternal");
+
+    hr = CoDisconnectObject(&Test_Unknown, 0);
+    ok_ole_success(hr, "CoDisconnectObject");
+
+    return 0;
+}
+
+/* Some COM functions (perhaps even all of them?) can make use of an "implicit"
+ * multi-threaded apartment created by another thread in the same process. */
+static void test_implicit_mta(void)
+{
+    HANDLE thread;
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    thread = CreateThread(NULL, 0, implicit_mta_proc, NULL, 0, NULL);
+    ok(!WaitForSingleObject(thread, 1000), "wait failed\n");
+
+    CoUninitialize();
+}
+
 START_TEST(compobj)
 {
     init_funcs();
@@ -3926,7 +3908,9 @@ START_TEST(compobj)
     test_CoGetApartmentType();
     test_IMallocSpy();
     test_CoGetCurrentLogicalThreadId();
-    test_IInitializeSpy();
+    test_IInitializeSpy(FALSE);
+    test_IInitializeSpy(TRUE);
     test_CoGetInstanceFromFile();
     test_GlobalOptions();
+    test_implicit_mta();
 }

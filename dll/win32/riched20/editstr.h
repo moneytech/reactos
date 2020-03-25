@@ -51,7 +51,7 @@
 #include "wine/heap.h"
 #include "wine/list.h"
 
-#ifdef __i386__
+#if defined(__i386__) && !defined(__MINGW32__)
 extern const struct ITextHostVtbl itextHostStdcallVtbl DECLSPEC_HIDDEN;
 #endif /* __i386__ */
 
@@ -153,6 +153,12 @@ typedef enum {
 
 struct tagME_DisplayItem;
 
+struct re_object
+{
+  struct list entry;
+  REOBJECT obj;
+};
+
 typedef struct tagME_Run
 {
   ME_Style *style;
@@ -163,7 +169,7 @@ typedef struct tagME_Run
   int nFlags;
   int nAscent, nDescent; /* pixels above/below baseline */
   POINT pt; /* relative to para's position */
-  REOBJECT *ole_obj; /* FIXME: should be a union with strText (at least) */
+  struct re_object *reobj; /* FIXME: should be a union with strText (at least) */
 
   SCRIPT_ANALYSIS script_analysis;
   int num_glyphs, max_glyphs;
@@ -213,6 +219,7 @@ typedef struct tagME_Paragraph
   struct para_num para_num;
   ME_Run *eop_run; /* ptr to the end-of-para run */
   struct tagME_DisplayItem *prev_para, *next_para;
+  struct tagME_DisplayItem *prev_marked, *next_marked;
 } ME_Paragraph;
 
 typedef struct tagME_Cell /* v4.1 */
@@ -378,7 +385,7 @@ typedef struct tagME_TextEditor
 {
   HWND hWnd, hwndParent;
   ITextHost *texthost;
-  IRichEditOle *reOle;
+  IUnknown *reOle;
   BOOL bEmulateVersion10;
   ME_TextBuffer *pBuffer;
   ME_Cursor *pCursors;
@@ -390,6 +397,7 @@ typedef struct tagME_TextEditor
   int nTotalWidth, nLastTotalWidth;
   int nAvailWidth; /* 0 = wrap to client area, else wrap width in twips */
   int nUDArrowX;
+  int total_rows;
   COLORREF rgbBackColor;
   HBRUSH hbrBackground;
   BOOL bCaretAtEnd;
@@ -426,6 +434,7 @@ typedef struct tagME_TextEditor
   int imeStartIndex;
   DWORD selofs; /* The size of the selection bar on the left side of control */
   ME_SelectionType nSelectionType;
+  ME_DisplayItem *first_marked_para;
 
   /* Track previous notified selection */
   CHARRANGE notified_cr;
@@ -433,9 +442,12 @@ typedef struct tagME_TextEditor
   /* Cache previously set scrollbar info */
   SCROLLINFO vert_si, horz_si;
 
+  int caret_height;
+  BOOL caret_hidden;
   BOOL bMouseCaptured;
   int wheel_remain;
   struct list style_list;
+  struct list reobj_list;
 } ME_TextEditor;
 
 typedef struct tagME_Context
@@ -445,6 +457,8 @@ typedef struct tagME_Context
   RECT rcView;
   SIZE dpi;
   int nAvailWidth;
+  ME_Style *current_style;
+  HFONT orig_font;
 
   /* those are valid inside ME_WrapTextParagraph and related */
   ME_TextEditor *editor;

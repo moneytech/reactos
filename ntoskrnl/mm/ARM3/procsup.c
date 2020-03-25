@@ -88,7 +88,7 @@ MiCreatePebOrTeb(IN PEPROCESS Process,
     *BaseAddress = 0;
     Status = MiInsertVadEx((PMMVAD)Vad,
                            BaseAddress,
-                           BYTES_TO_PAGES(Size),
+                           Size,
                            HighestAddress,
                            PAGE_SIZE,
                            MEM_TOP_DOWN);
@@ -175,6 +175,7 @@ MmDeleteKernelStack(IN PVOID StackBase,
     PMMPFN Pfn1, Pfn2;
     ULONG i;
     KIRQL OldIrql;
+    PSLIST_ENTRY SListEntry;
 
     //
     // This should be the guard page, so decrement by one
@@ -189,9 +190,8 @@ MmDeleteKernelStack(IN PVOID StackBase,
     {
         if (ExQueryDepthSList(&MmDeadStackSListHead) < MmMaximumDeadKernelStacks)
         {
-            Pfn1 = MiGetPfnEntry(PointerPte->u.Hard.PageFrameNumber);
-            InterlockedPushEntrySList(&MmDeadStackSListHead,
-                                      (PSLIST_ENTRY)&Pfn1->u1.NextStackPfn);
+            SListEntry = ((PSLIST_ENTRY)StackBase) - 1;
+            InterlockedPushEntrySList(&MmDeadStackSListHead, SListEntry);
             return;
         }
     }
@@ -265,7 +265,7 @@ MmCreateKernelStack(IN BOOLEAN GuiStack,
     KIRQL OldIrql;
     PFN_NUMBER PageFrameIndex;
     ULONG i;
-    PMMPFN Pfn1;
+    PSLIST_ENTRY SListEntry;
 
     //
     // Calculate pages needed
@@ -286,11 +286,10 @@ MmCreateKernelStack(IN BOOLEAN GuiStack,
         //
         if (ExQueryDepthSList(&MmDeadStackSListHead))
         {
-            Pfn1 = (PMMPFN)InterlockedPopEntrySList(&MmDeadStackSListHead);
-            if (Pfn1)
+            SListEntry = InterlockedPopEntrySList(&MmDeadStackSListHead);
+            if (SListEntry != NULL)
             {
-                PointerPte = Pfn1->PteAddress;
-                BaseAddress = MiPteToAddress(++PointerPte);
+                BaseAddress = (SListEntry + 1);
                 return BaseAddress;
             }
         }
@@ -406,7 +405,6 @@ MmGrowKernelStackEx(IN PVOID StackPointer,
         //
         // Sorry!
         //
-        DPRINT1("Thread wants too much stack\n");
         return STATUS_STACK_OVERFLOW;
     }
 
@@ -1029,9 +1027,9 @@ MmInitializeProcessAddressSpace(IN PEPROCESS Process,
     return Status;
 }
 
+INIT_FUNCTION
 NTSTATUS
 NTAPI
-INIT_FUNCTION
 MmInitializeHandBuiltProcess(IN PEPROCESS Process,
                              IN PULONG_PTR DirectoryTableBase)
 {
@@ -1054,9 +1052,9 @@ MmInitializeHandBuiltProcess(IN PEPROCESS Process,
     return STATUS_SUCCESS;
 }
 
+INIT_FUNCTION
 NTSTATUS
 NTAPI
-INIT_FUNCTION
 MmInitializeHandBuiltProcess2(IN PEPROCESS Process)
 {
     /* Lock the VAD, ARM3-owned ranges away */

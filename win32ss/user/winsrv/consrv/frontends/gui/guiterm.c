@@ -16,6 +16,7 @@
 #define NDEBUG
 #include <debug.h>
 
+#include "concfg/font.h"
 #include "guiterm.h"
 #include "resource.h"
 
@@ -96,8 +97,7 @@ InvalidateCell(PGUI_CONSOLE_DATA GuiData,
  *                        GUI Terminal Initialization                         *
  ******************************************************************************/
 
-VOID
-SwitchFullScreen(PGUI_CONSOLE_DATA GuiData, BOOL FullScreen);
+// FIXME: HACK: Potential HACK for CORE-8129; see revision 63595.
 VOID
 CreateSysMenu(HWND hWnd);
 
@@ -173,7 +173,7 @@ GuiConsoleInputThread(PVOID Param)
 
                 ASSERT(NewWindow == GuiData->hWindow);
 
-                InterlockedIncrement(&WindowCount);
+                _InterlockedIncrement(&WindowCount);
 
                 //
                 // FIXME: TODO: Move everything there into conwnd.c!OnNcCreate()
@@ -203,9 +203,7 @@ GuiConsoleInputThread(PVOID Param)
                     if (GuiData->GuiInfo.FullScreen) SwitchFullScreen(GuiData, TRUE);
 
                     DPRINT("PM_CREATE_CONSOLE -- showing window\n");
-                    // ShowWindow(NewWindow, (int)GuiData->GuiInfo.ShowWindow);
                     ShowWindowAsync(NewWindow, (int)GuiData->GuiInfo.ShowWindow);
-                    DPRINT("Window showed\n");
                 }
                 else
                 {
@@ -240,7 +238,7 @@ GuiConsoleInputThread(PVOID Param)
 
                 NtSetEvent(GuiData->hGuiTermEvent, NULL);
 
-                if (InterlockedDecrement(&WindowCount) == 0)
+                if (_InterlockedDecrement(&WindowCount) == 0)
                 {
                     DPRINT("CONSRV: Going to quit the Input Thread 0x%p\n", InputThreadId);
                     goto Quit;
@@ -297,12 +295,15 @@ GuiInit(IN PCONSOLE_INIT_INFO ConsoleInitInfo,
     HANDLE hInputThread;
     CLIENT_ID ClientId;
 
-    /*
-     * Initialize and register the console window class, if needed.
-     */
+    /* Perform one-time initialization */
     if (!ConsInitialized)
     {
+        /* Initialize and register the console window class */
         if (!RegisterConWndClass(ConSrvDllInstance)) return FALSE;
+
+        /* Initialize the font support -- additional TrueType fonts cache */
+        InitTTFontCache();
+
         ConsInitialized = TRUE;
     }
 
@@ -328,7 +329,7 @@ GuiInit(IN PCONSOLE_INIT_INFO ConsoleInitInfo,
 
     hDesk = NtUserResolveDesktop(ConsoleLeaderProcessHandle,
                                  &DesktopPath,
-                                 0,
+                                 FALSE,
                                  &hWinSta);
     DPRINT("NtUserResolveDesktop(DesktopPath = '%wZ') returned hDesk = 0x%p; hWinSta = 0x%p\n",
            &DesktopPath, hDesk, hWinSta);
@@ -869,8 +870,7 @@ static VOID NTAPI
 GuiChangeTitle(IN OUT PFRONTEND This)
 {
     PGUI_CONSOLE_DATA GuiData = This->Context;
-    // PostMessageW(GuiData->hWindow, PM_CONSOLE_SET_TITLE, 0, 0);
-    SetWindowTextW(GuiData->hWindow, GuiData->Console->Title.Buffer);
+    PostMessageW(GuiData->hWindow, PM_CONSOLE_SET_TITLE, 0, 0);
 }
 
 static BOOL NTAPI
@@ -914,6 +914,13 @@ GuiChangeIcon(IN OUT PFRONTEND This,
     }
 
     return TRUE;
+}
+
+static HDESK NTAPI
+GuiGetThreadConsoleDesktop(IN OUT PFRONTEND This)
+{
+    PGUI_CONSOLE_DATA GuiData = This->Context;
+    return GuiData->Desktop;
 }
 
 static HWND NTAPI
@@ -1114,7 +1121,7 @@ GuiMenuControl(IN OUT PFRONTEND This,
     GuiData->CmdIdLow  = CmdIdLow ;
     GuiData->CmdIdHigh = CmdIdHigh;
 
-    return GetSystemMenu(GuiData->hWindow, FALSE);
+    return GuiData->hSysMenu;
 }
 
 static BOOL NTAPI
@@ -1128,12 +1135,11 @@ GuiSetMenuClose(IN OUT PFRONTEND This,
      */
 
     PGUI_CONSOLE_DATA GuiData = This->Context;
-    HMENU hSysMenu = GetSystemMenu(GuiData->hWindow, FALSE);
 
-    if (hSysMenu == NULL) return FALSE;
+    if (GuiData->hSysMenu == NULL) return FALSE;
 
     GuiData->IsCloseButtonEnabled = Enable;
-    EnableMenuItem(hSysMenu, SC_CLOSE, MF_BYCOMMAND | (Enable ? MF_ENABLED : MF_GRAYED));
+    EnableMenuItem(GuiData->hSysMenu, SC_CLOSE, MF_BYCOMMAND | (Enable ? MF_ENABLED : MF_GRAYED));
 
     return TRUE;
 }
@@ -1153,6 +1159,7 @@ static FRONTEND_VTBL GuiVtbl =
     GuiRefreshInternalInfo,
     GuiChangeTitle,
     GuiChangeIcon,
+    GuiGetThreadConsoleDesktop,
     GuiGetConsoleWindowHandle,
     GuiGetLargestConsoleWindowSize,
     GuiGetSelectionInfo,
@@ -1174,6 +1181,7 @@ GuiLoadFrontEnd(IN OUT PFRONTEND FrontEnd,
 {
     PCONSOLE_START_INFO ConsoleStartInfo;
     PGUI_INIT_INFO GuiInitInfo;
+    USEROBJECTFLAGS UserObjectFlags;
 
     if (FrontEnd == NULL || ConsoleInfo == NULL || ConsoleInitInfo == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -1194,6 +1202,21 @@ GuiLoadFrontEnd(IN OUT PFRONTEND FrontEnd,
         return STATUS_UNSUCCESSFUL;
     }
 
+    GuiInitInfo->IsWindowVisible = ConsoleInitInfo->IsWindowVisible;
+    if (GuiInitInfo->IsWindowVisible)
+    {
+        /* Don't show the console if the window station is not interactive */
+        if (GetUserObjectInformationW(GuiInitInfo->WinSta,
+                                      UOI_FLAGS,
+                                      &UserObjectFlags,
+                                      sizeof(UserObjectFlags),
+                                      NULL))
+        {
+            if (!(UserObjectFlags.dwFlags & WSF_VISIBLE))
+                GuiInitInfo->IsWindowVisible = FALSE;
+        }
+    }
+
     /*
      * Load terminal settings
      */
@@ -1209,13 +1232,13 @@ GuiLoadFrontEnd(IN OUT PFRONTEND FrontEnd,
 
     GuiInitInfo->TermInfo.ShowWindow = SW_SHOWNORMAL;
 
-    if (ConsoleInitInfo->IsWindowVisible)
+    if (GuiInitInfo->IsWindowVisible)
     {
         /* 2. Load the remaining console settings via the registry */
         if ((ConsoleStartInfo->dwStartupFlags & STARTF_TITLEISLINKNAME) == 0)
         {
 #if 0
-            /* Load the terminal infos from the registry */
+            /* Load the terminal information from the registry */
             GuiConsoleReadUserSettings(&GuiInitInfo->TermInfo);
 #endif
 
@@ -1256,7 +1279,6 @@ GuiLoadFrontEnd(IN OUT PFRONTEND FrontEnd,
 
     // Display
     GuiInitInfo->TermInfo.FullScreen   = ConsoleInfo->FullScreen;
-    // GuiInitInfo->TermInfo.ShowWindow;
     GuiInitInfo->TermInfo.AutoPosition = ConsoleInfo->AutoPosition;
     GuiInitInfo->TermInfo.WindowOrigin = ConsoleInfo->WindowPosition;
 
@@ -1272,8 +1294,6 @@ GuiLoadFrontEnd(IN OUT PFRONTEND FrontEnd,
         // GuiInitInfo->hIconSm = ghDefaultIconSm;
 
     // ASSERT(GuiInitInfo->hIcon && GuiInitInfo->hIconSm);
-
-    GuiInitInfo->IsWindowVisible = ConsoleInitInfo->IsWindowVisible;
 
     /* Finally, initialize the frontend structure */
     FrontEnd->Vtbl     = &GuiVtbl;

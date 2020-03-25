@@ -101,6 +101,69 @@ PortGetDriverInitData(
 
 
 static
+VOID
+PortAcquireSpinLock(
+    PFDO_DEVICE_EXTENSION DeviceExtension,
+    STOR_SPINLOCK SpinLock,
+    PVOID LockContext,
+    PSTOR_LOCK_HANDLE LockHandle)
+{
+    DPRINT1("PortAcquireSpinLock(%p %lu %p %p)\n",
+            DeviceExtension, SpinLock, LockContext, LockHandle);
+
+    LockHandle->Lock = SpinLock;
+
+    switch (SpinLock)
+    {
+        case DpcLock: /* 1, */
+            DPRINT1("DpcLock\n");
+            break;
+
+        case StartIoLock: /* 2 */
+            DPRINT1("StartIoLock\n");
+            break;
+
+        case InterruptLock: /* 3 */
+            DPRINT1("InterruptLock\n");
+            if (DeviceExtension->Interrupt == NULL)
+                LockHandle->Context.OldIrql = 0;
+            else
+                LockHandle->Context.OldIrql = KeAcquireInterruptSpinLock(DeviceExtension->Interrupt);
+            break;
+    }
+}
+
+
+static
+VOID
+PortReleaseSpinLock(
+    PFDO_DEVICE_EXTENSION DeviceExtension,
+    PSTOR_LOCK_HANDLE LockHandle)
+{
+    DPRINT1("PortReleaseSpinLock(%p %p)\n",
+            DeviceExtension, LockHandle);
+
+    switch (LockHandle->Lock)
+    {
+        case DpcLock: /* 1, */
+            DPRINT1("DpcLock\n");
+            break;
+
+        case StartIoLock: /* 2 */
+            DPRINT1("StartIoLock\n");
+            break;
+
+        case InterruptLock: /* 3 */
+            DPRINT1("InterruptLock\n");
+            if (DeviceExtension->Interrupt != NULL)
+                KeReleaseInterruptSpinLock(DeviceExtension->Interrupt,
+                                           LockHandle->Context.OldIrql);
+            break;
+    }
+}
+
+
+static
 NTSTATUS
 NTAPI
 PortAddDevice(
@@ -159,6 +222,9 @@ PortAddDevice(
     DeviceExtension->PhysicalDevice = PhysicalDeviceObject;
 
     DeviceExtension->PnpState = dsStopped;
+
+    KeInitializeSpinLock(&DeviceExtension->PdoListLock);
+    InitializeListHead(&DeviceExtension->PdoListHead);
 
     /* Attach the FDO to the device stack */
     Status = IoAttachDeviceToDeviceStackSafe(Fdo,
@@ -280,13 +346,30 @@ PortDispatchScsi(
     IN PDEVICE_OBJECT DeviceObject,
     IN PIRP Irp)
 {
+    PFDO_DEVICE_EXTENSION DeviceExtension;
+
     DPRINT1("PortDispatchScsi(%p %p)\n",
             DeviceObject, Irp);
 
-    Irp->IoStatus.Status = STATUS_SUCCESS;
-    Irp->IoStatus.Information = 0;
+    DeviceExtension = (PFDO_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
+    DPRINT1("ExtensionType: %u\n", DeviceExtension->ExtensionType);
 
-    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    switch (DeviceExtension->ExtensionType)
+    {
+        case FdoExtension:
+            return PortFdoScsi(DeviceObject,
+                               Irp);
+
+        case PdoExtension:
+            return PortPdoScsi(DeviceObject,
+                               Irp);
+
+        default:
+            Irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+            Irp->IoStatus.Information = 0;
+            IoCompleteRequest(Irp, IO_NO_INCREMENT);
+            return STATUS_UNSUCCESSFUL;
+    }
 
     return STATUS_SUCCESS;
 }
@@ -742,10 +825,13 @@ StorPortGetPhysicalAddress(
 
     // FIXME
 
-    UNIMPLEMENTED;
 
-    *Length = 0;
-    PhysicalAddress.QuadPart = (LONGLONG)0;
+    PhysicalAddress = MmGetPhysicalAddress(VirtualAddress);
+    *Length = 1;
+//    UNIMPLEMENTED;
+
+//    *Length = 0;
+//    PhysicalAddress.QuadPart = (LONGLONG)0;
 
     return PhysicalAddress;
 }
@@ -1012,10 +1098,16 @@ StorPortNotification(
     PMINIPORT_DEVICE_EXTENSION MiniportExtension = NULL;
     PFDO_DEVICE_EXTENSION DeviceExtension = NULL;
     PHW_PASSIVE_INITIALIZE_ROUTINE HwPassiveInitRoutine;
+    PSTORPORT_EXTENDED_FUNCTIONS *ppExtendedFunctions;
     PBOOLEAN Result;
     PSTOR_DPC Dpc;
     PHW_DPC_ROUTINE HwDpcRoutine;
     va_list ap;
+
+    STOR_SPINLOCK SpinLock;
+    PVOID LockContext;
+    PSTOR_LOCK_HANDLE LockHandle;
+    PSCSI_REQUEST_BLOCK Srb;
 
     DPRINT1("StorPortNotification(%x %p)\n",
             NotificationType, HwDeviceExtension);
@@ -1036,6 +1128,24 @@ StorPortNotification(
 
     switch (NotificationType)
     {
+        case RequestComplete:
+            DPRINT1("RequestComplete\n");
+            Srb = (PSCSI_REQUEST_BLOCK)va_arg(ap, PSCSI_REQUEST_BLOCK);
+            DPRINT1("Srb %p\n", Srb);
+            if (Srb->OriginalRequest != NULL)
+            {
+                DPRINT1("Need to complete the IRP!\n");
+
+            }
+            break;
+
+        case GetExtendedFunctionTable:
+            DPRINT1("GetExtendedFunctionTable\n");
+            ppExtendedFunctions = (PSTORPORT_EXTENDED_FUNCTIONS*)va_arg(ap, PSTORPORT_EXTENDED_FUNCTIONS*);
+            if (ppExtendedFunctions != NULL)
+                *ppExtendedFunctions = NULL; /* FIXME */
+            break;
+
         case EnablePassiveInitialization:
             DPRINT1("EnablePassiveInitialization\n");
             HwPassiveInitRoutine = (PHW_PASSIVE_INITIALIZE_ROUTINE)va_arg(ap, PHW_PASSIVE_INITIALIZE_ROUTINE);
@@ -1063,6 +1173,28 @@ StorPortNotification(
                             (PKDEFERRED_ROUTINE)HwDpcRoutine,
                             (PVOID)DeviceExtension);
             KeInitializeSpinLock(&Dpc->Lock);
+            break;
+
+        case AcquireSpinLock:
+            DPRINT1("AcquireSpinLock\n");
+            SpinLock = (STOR_SPINLOCK)va_arg(ap, STOR_SPINLOCK);
+            DPRINT1("SpinLock %lu\n", SpinLock);
+            LockContext = (PVOID)va_arg(ap, PVOID);
+            DPRINT1("LockContext %p\n", LockContext);
+            LockHandle = (PSTOR_LOCK_HANDLE)va_arg(ap, PSTOR_LOCK_HANDLE);
+            DPRINT1("LockHandle %p\n", LockHandle);
+            PortAcquireSpinLock(DeviceExtension,
+                                SpinLock,
+                                LockContext,
+                                LockHandle);
+            break;
+
+        case ReleaseSpinLock:
+            DPRINT1("ReleaseSpinLock\n");
+            LockHandle = (PSTOR_LOCK_HANDLE)va_arg(ap, PSTOR_LOCK_HANDLE);
+            DPRINT1("LockHandle %p\n", LockHandle);
+            PortReleaseSpinLock(DeviceExtension,
+                                LockHandle);
             break;
 
         default:
@@ -1107,6 +1239,25 @@ StorPortPauseDevice(
     UNIMPLEMENTED;
     return FALSE;
 }
+
+
+#if defined(_M_AMD64)
+/*
+ * @implemented
+ */
+/* KeQuerySystemTime is an inline function, 
+   so we cannot forward the export to ntoskrnl */
+STORPORT_API
+VOID
+NTAPI
+StorPortQuerySystemTime(
+    _Out_ PLARGE_INTEGER CurrentTime)
+{
+    DPRINT1("StorPortQuerySystemTime(%p)\n", CurrentTime);
+
+    KeQuerySystemTime(CurrentTime);
+}
+#endif /* defined(_M_AMD64) */
 
 
 /*

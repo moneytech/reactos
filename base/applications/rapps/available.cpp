@@ -300,7 +300,7 @@ BOOL CAvailableApps::UpdateAppsDB()
         return TRUE;
     }
 
-    CDownloadManager::DownloadApplicationsDB(APPLICATION_DATABASE_URL);
+    DownloadApplicationsDB(APPLICATION_DATABASE_URL);
 
     if (!ExtractFilesFromCab(m_Strings.szCabName, 
                              m_Strings.szCabDir,
@@ -320,7 +320,7 @@ BOOL CAvailableApps::ForceUpdateAppsDB()
     return UpdateAppsDB();
 }
 
-BOOL CAvailableApps::Enum(INT EnumType, AVAILENUMPROC lpEnumProc)
+BOOL CAvailableApps::Enum(INT EnumType, AVAILENUMPROC lpEnumProc, PVOID param)
 {
 
     HANDLE hFind = INVALID_HANDLE_VALUE;
@@ -381,7 +381,7 @@ skip_if_cached:
             Info->RefreshAppInfo();
 
             if (lpEnumProc)
-                lpEnumProc(Info, m_Strings.szAppsPath.GetString());
+                lpEnumProc(Info, m_Strings.szAppsPath.GetString(), param);
         }
     } while (FindNextFileW(hFind, &FindFileData) != 0);
 
@@ -402,7 +402,7 @@ CAvailableApplicationInfo* CAvailableApps::FindInfo(const ATL::CStringW& szAppNa
     while (CurrentListPosition != NULL)
     {
         info = m_InfoList.GetNext(CurrentListPosition);
-        if (info->m_szName == szAppName)
+        if (info->m_szName.CompareNoCase(szAppName) == 0)
         {
             return info;
         }

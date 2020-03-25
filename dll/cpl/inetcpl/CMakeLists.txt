@@ -1,18 +1,20 @@
 
+add_definitions(-D__WINESRC__)
 include_directories(BEFORE ${REACTOS_SOURCE_DIR}/sdk/include/reactos/wine)
 spec2def(inetcpl.cpl inetcpl.spec)
 
 list(APPEND SOURCE
-    inetcpl.c
+    connections.c
     content.c
     general.c
+    inetcpl.c
     security.c
     precomp.h)
 
 file(GLOB inetcpl_rc_deps resources/*.*)
 add_rc_deps(inetcpl.rc ${inetcpl_rc_deps})
 
-add_library(inetcpl SHARED
+add_library(inetcpl MODULE
     ${SOURCE}
     inetcpl.rc
     ${CMAKE_CURRENT_BINARY_DIR}/inetcpl_stubs.c

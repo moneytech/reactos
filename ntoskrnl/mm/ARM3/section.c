@@ -512,7 +512,7 @@ MiFillSystemPageDirectory(IN PVOID Base,
             TempPde.u.Hard.PageFrameNumber = PageFrameIndex;
 
 #if (_MI_PAGING_LEVELS == 2)
-            ParentPage = MmSystemPageDirectory[(PointerPde - MiAddressToPde(NULL)) / PDE_COUNT];
+            ParentPage = MmSystemPageDirectory[(PointerPde - MiAddressToPde(NULL)) / PDE_PER_PAGE];
 #else
             ParentPage = MiPdeToPpe(PointerPde)->u.Hard.PageFrameNumber;
 #endif
@@ -1897,7 +1897,6 @@ MiQueryMemorySectionName(IN HANDLE ProcessHandle,
 {
     PEPROCESS Process;
     NTSTATUS Status;
-    WCHAR ModuleFileNameBuffer[MAX_PATH] = {0};
     UNICODE_STRING ModuleFileName;
     PMEMORY_SECTION_NAME SectionName = NULL;
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
@@ -1915,7 +1914,6 @@ MiQueryMemorySectionName(IN HANDLE ProcessHandle,
         return Status;
     }
 
-    RtlInitEmptyUnicodeString(&ModuleFileName, ModuleFileNameBuffer, sizeof(ModuleFileNameBuffer));
     Status = MmGetFileNameForAddress(BaseAddress, &ModuleFileName);
 
     if (NT_SUCCESS(Status))
@@ -1925,11 +1923,12 @@ MiQueryMemorySectionName(IN HANDLE ProcessHandle,
         {
             _SEH2_TRY
             {
-                RtlInitUnicodeString(&SectionName->SectionFileName, SectionName->NameBuffer);
-                SectionName->SectionFileName.MaximumLength = (USHORT)MemoryInformationLength;
+                RtlInitEmptyUnicodeString(&SectionName->SectionFileName,
+                                          (PWSTR)(SectionName + 1),
+                                          MemoryInformationLength - sizeof(MEMORY_SECTION_NAME));
                 RtlCopyUnicodeString(&SectionName->SectionFileName, &ModuleFileName);
 
-                if (ReturnLength) *ReturnLength = ModuleFileName.Length;
+                if (ReturnLength) *ReturnLength = ModuleFileName.Length + sizeof(MEMORY_SECTION_NAME);
 
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -1940,13 +1939,16 @@ MiQueryMemorySectionName(IN HANDLE ProcessHandle,
         }
         else
         {
-            RtlInitUnicodeString(&SectionName->SectionFileName, SectionName->NameBuffer);
-            SectionName->SectionFileName.MaximumLength = (USHORT)MemoryInformationLength;
+            RtlInitEmptyUnicodeString(&SectionName->SectionFileName,
+                                      (PWSTR)(SectionName + 1),
+                                      MemoryInformationLength - sizeof(MEMORY_SECTION_NAME));
             RtlCopyUnicodeString(&SectionName->SectionFileName, &ModuleFileName);
 
-            if (ReturnLength) *ReturnLength = ModuleFileName.Length;
+            if (ReturnLength) *ReturnLength = ModuleFileName.Length + sizeof(MEMORY_SECTION_NAME);
 
         }
+
+        RtlFreeUnicodeString(&ModuleFileName);
     }
     ObDereferenceObject(Process);
     return Status;
@@ -2847,6 +2849,7 @@ MmMapViewOfArm3Section(IN PVOID SectionObject,
     PCONTROL_AREA ControlArea;
     ULONG ProtectionMask;
     NTSTATUS Status;
+    ULONG64 CalculatedViewSize;
     PAGED_CODE();
 
     /* Get the segment and control area */
@@ -2893,11 +2896,12 @@ MmMapViewOfArm3Section(IN PVOID SectionObject,
     if (!(*ViewSize))
     {
         /* Compute it for the caller */
-        *ViewSize = (SIZE_T)(Section->SizeOfSection.QuadPart - SectionOffset->QuadPart);
+        CalculatedViewSize = Section->SizeOfSection.QuadPart - 
+                             SectionOffset->QuadPart;
 
         /* Check if it's larger than 4GB or overflows into kernel-mode */
-        if ((*ViewSize > 0xFFFFFFFF) ||
-            (((ULONG_PTR)MM_HIGHEST_VAD_ADDRESS - (ULONG_PTR)*BaseAddress) < *ViewSize))
+        if (!NT_SUCCESS(RtlULongLongToSIZET(CalculatedViewSize, ViewSize)) ||
+            (((ULONG_PTR)MM_HIGHEST_VAD_ADDRESS - (ULONG_PTR)*BaseAddress) < CalculatedViewSize))
         {
             DPRINT1("Section view won't fit\n");
             return STATUS_INVALID_VIEW_SIZE;

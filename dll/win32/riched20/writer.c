@@ -18,9 +18,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include "config.h"
-#include "wine/port.h"
-
 #define NONAMELESSUNION
 
 #include "editor.h"
@@ -123,17 +120,17 @@ ME_StreamOutMove(ME_OutStream *pStream, const char *buffer, int len)
 }
 
 
-static BOOL
+static BOOL WINAPIV
 ME_StreamOutPrint(ME_OutStream *pStream, const char *format, ...)
 {
   char string[STREAMOUT_BUFFER_SIZE]; /* This is going to be enough */
   int len;
-  va_list valist;
+  __ms_va_list valist;
 
-  va_start(valist, format);
+  __ms_va_start(valist, format);
   len = vsnprintf(string, sizeof(string), format, valist);
-  va_end(valist);
-  
+  __ms_va_end(valist);
+
   return ME_StreamOutMove(pStream, string, len);
 }
 
@@ -245,7 +242,7 @@ static void add_font_to_fonttbl( ME_OutStream *stream, ME_Style *style )
     {
         for (i = 0; i < stream->nFontTblLen; i++)
             if (table[i].bCharSet == charset
-                && (table[i].szFaceName == face || !lstrcmpW(table[i].szFaceName, face)))
+                && (table[i].szFaceName == face || !wcscmp(table[i].szFaceName, face)))
                 break;
 
         if (i == stream->nFontTblLen && i < STREAMOUT_FONTTBL_SIZE)
@@ -270,7 +267,7 @@ static BOOL find_font_in_fonttbl( ME_OutStream *stream, CHARFORMAT2W *fmt, unsig
     for (i = 0; i < stream->nFontTblLen; i++)
     {
         if (facename == stream->fonttbl[i].szFaceName
-            || !lstrcmpW(facename, stream->fonttbl[i].szFaceName))
+            || !wcscmp(facename, stream->fonttbl[i].szFaceName))
             if (!(fmt->dwMask & CFM_CHARSET)
                 || fmt->bCharSet == stream->fonttbl[i].bCharSet)
             {
@@ -760,7 +757,7 @@ ME_StreamOutRTFCharProps(ME_OutStream *pStream, CHARFORMAT2W *fmt)
       { CFE_STRIKEOUT,   "\\strike",   "\\strike0"   },
   };
 
-  for (i = 0; i < sizeof(effects) / sizeof(effects[0]); i++)
+  for (i = 0; i < ARRAY_SIZE( effects ); i++)
   {
       if ((old_fmt->dwEffects ^ fmt->dwEffects) & effects[i].effect)
           strcat( props, fmt->dwEffects & effects[i].effect ? effects[i].on : effects[i].off );
@@ -841,7 +838,7 @@ ME_StreamOutRTFCharProps(ME_OutStream *pStream, CHARFORMAT2W *fmt)
       }
   }
   
-  if (strcmpW(old_fmt->szFaceName, fmt->szFaceName) ||
+  if (wcscmp(old_fmt->szFaceName, fmt->szFaceName) ||
       old_fmt->bCharSet != fmt->bCharSet)
   {
     if (find_font_in_fonttbl( pStream, fmt, &i ))
@@ -947,7 +944,7 @@ static BOOL stream_out_graphics( ME_TextEditor *editor, ME_OutStream *stream,
     SIZE goal, pic;
     ME_Context c;
 
-    hr = IOleObject_QueryInterface( run->ole_obj->poleobj, &IID_IDataObject, (void **)&data );
+    hr = IOleObject_QueryInterface( run->reobj->obj.poleobj, &IID_IDataObject, (void **)&data );
     if (FAILED(hr)) return FALSE;
 
     ME_InitContext( &c, editor, ITextHost_TxGetDC( editor->texthost ) );
@@ -975,8 +972,8 @@ static BOOL stream_out_graphics( ME_TextEditor *editor, ME_OutStream *stream,
                      emf_bits->szlMillimeters.cy * c.dpi.cy * 10 );
 
     /* convert goal size to twips */
-    goal.cx = MulDiv( run->ole_obj->sizel.cx, 144, 254 );
-    goal.cy = MulDiv( run->ole_obj->sizel.cy, 144, 254 );
+    goal.cx = MulDiv( run->reobj->obj.sizel.cx, 144, 254 );
+    goal.cy = MulDiv( run->reobj->obj.sizel.cy, 144, 254 );
 
     if (!ME_StreamOutPrint( stream, "{\\*\\shppict{\\pict\\emfblip\\picw%d\\pich%d\\picwgoal%d\\pichgoal%d\n",
                             pic.cx, pic.cy, goal.cx, goal.cy ))

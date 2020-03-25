@@ -6,6 +6,7 @@ typedef struct _FONT_ENTRY
     LIST_ENTRY ListEntry;
     FONTGDI *Font;
     UNICODE_STRING FaceName;
+    UNICODE_STRING StyleName;
     BYTE NotEnum;
 } FONT_ENTRY, *PFONT_ENTRY;
 
@@ -29,6 +30,8 @@ typedef struct _FONT_CACHE_ENTRY
     FT_Face Face;
     FT_BitmapGlyph BitmapGlyph;
     int Height;
+    int Width;
+    int Escapement;
     FT_Render_Mode RenderMode;
     MATRIX mxWorldToDevice;
 } FONT_CACHE_ENTRY, *PFONT_CACHE_ENTRY;
@@ -59,6 +62,7 @@ typedef struct GDI_LOAD_FONT
     DWORD               Characteristics;
     UNICODE_STRING      RegValueName;
     BOOL                IsTrueType;
+    BYTE                CharSet;
     PFONT_ENTRY_MEM     PrivateEntry;
 } GDI_LOAD_FONT, *PGDI_LOAD_FONT;
 

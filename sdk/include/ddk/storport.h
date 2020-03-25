@@ -57,7 +57,14 @@ extern "C" {
 #define CDB10GENERIC_LENGTH                 10
 #define CDB12GENERIC_LENGTH                 12
 
-#define INQUIRYDATABUFFERSIZE               36
+#define INQUIRYDATABUFFERSIZE                36
+#define SENSE_BUFFER_SIZE                    18
+#define MAX_SENSE_BUFFER_SIZE               255
+
+#define FILE_DEVICE_SCSI 0x0000001b
+#define IOCTL_SCSI_EXECUTE_IN   ((FILE_DEVICE_SCSI << 16) + 0x0011)
+#define IOCTL_SCSI_EXECUTE_OUT  ((FILE_DEVICE_SCSI << 16) + 0x0012)
+#define IOCTL_SCSI_EXECUTE_NONE ((FILE_DEVICE_SCSI << 16) + 0x0013)
 
 #define MODE_PAGE_VENDOR_SPECIFIC           0x00
 #define MODE_PAGE_ERROR_RECOVERY            0x01
@@ -397,6 +404,23 @@ extern "C" {
 #define VPD_MODE_PAGE_POLICY                0x87
 #define VPD_SCSI_PORTS                      0x88
 
+#define SCSI_SENSE_NO_SENSE                 0x00
+#define SCSI_SENSE_RECOVERED_ERROR          0x01
+#define SCSI_SENSE_NOT_READY                0x02
+#define SCSI_SENSE_MEDIUM_ERROR             0x03
+#define SCSI_SENSE_HARDWARE_ERROR           0x04
+#define SCSI_SENSE_ILLEGAL_REQUEST          0x05
+#define SCSI_SENSE_UNIT_ATTENTION           0x06
+#define SCSI_SENSE_DATA_PROTECT             0x07
+#define SCSI_SENSE_BLANK_CHECK              0x08
+#define SCSI_SENSE_UNIQUE                   0x09
+#define SCSI_SENSE_COPY_ABORTED             0x0A
+#define SCSI_SENSE_ABORTED_COMMAND          0x0B
+#define SCSI_SENSE_EQUAL                    0x0C
+#define SCSI_SENSE_VOL_OVERFLOW             0x0D
+#define SCSI_SENSE_MISCOMPARE               0x0E
+#define SCSI_SENSE_RESERVED                 0x0F
+
 typedef enum _STOR_SYNCHRONIZATION_MODEL
 {
     StorSynchronizeHalfDuplex,
@@ -562,6 +586,12 @@ typedef enum _STOR_EVENT_ASSOCIATION_ENUM
     StorEventTargetAssociation,
     StorEventInvalidAssociation
 } STOR_EVENT_ASSOCIATION_ENUM;
+
+typedef enum _GETSGSTATUS
+{
+    SG_ALLOCATED = 0,
+    SG_BUFFER_TOO_SMALL
+} GETSGSTATUS, *PGETSGSTATUS;
 
 typedef struct _SCSI_REQUEST_BLOCK
 {
@@ -1918,6 +1948,26 @@ typedef struct _LUN_LIST
     UCHAR Lun[0][8];
 #endif
 } LUN_LIST, *PLUN_LIST;
+
+typedef struct _SENSE_DATA
+{
+    UCHAR ErrorCode:7;
+    UCHAR Valid:1;
+    UCHAR SegmentNumber;
+    UCHAR SenseKey:4;
+    UCHAR Reserved:1;
+    UCHAR IncorrectLength:1;
+    UCHAR EndOfMedia:1;
+    UCHAR FileMark:1;
+    UCHAR Information[4];
+    UCHAR AdditionalSenseLength;
+    UCHAR CommandSpecificInformation[4];
+    UCHAR AdditionalSenseCode;
+    UCHAR AdditionalSenseCodeQualifier;
+    UCHAR FieldReplaceableUnitCode;
+    UCHAR SenseKeySpecific[3];
+} SENSE_DATA, *PSENSE_DATA;
+
 #include <poppack.h>
 
 typedef PHYSICAL_ADDRESS STOR_PHYSICAL_ADDRESS;
@@ -2181,6 +2231,64 @@ VOID
     _In_ PVOID *Irp,
     _In_ PSTOR_SCATTER_GATHER_LIST ScatterGather,
     _In_ PVOID Context);
+
+typedef
+BOOLEAN
+(NTAPI *PStorPortGetMessageInterruptInformation)(
+    _In_ PVOID HwDeviceExtension,
+    _In_ ULONG MessageId,
+    _Out_ PMESSAGE_INTERRUPT_INFORMATION InterruptInfo);
+
+typedef
+VOID
+(NTAPI *PStorPortPutScatterGatherList)(
+    _In_ PVOID HwDeviceExtension,
+    _In_ PSTOR_SCATTER_GATHER_LIST ScatterGatherList,
+    _In_ BOOLEAN WriteToDevice);
+
+typedef
+GETSGSTATUS
+(NTAPI *PStorPortBuildScatterGatherList)(
+    _In_ PVOID HwDeviceExtension,
+    _In_ PVOID Mdl,
+    _In_ PVOID CurrentVa,
+    _In_ ULONG Length,
+    _In_ PpostScaterGatherExecute ExecutionRoutine,
+    _In_ PVOID Context,
+    _In_ BOOLEAN WriteToDevice,
+    _Inout_ PVOID ScatterGatherBuffer,
+    _In_ ULONG ScatterGatherBufferLength);
+
+typedef
+VOID
+(NTAPI *PStorPortFreePool)(
+    _In_ PVOID PMemory,
+    _In_ PVOID HwDeviceExtension,
+    _In_opt_ PVOID PMdl);
+
+typedef
+PVOID
+(NTAPI *PStorPortAllocatePool)(
+    _In_ ULONG NumberOfBytes,
+    _In_ ULONG Tag,
+    _In_ PVOID HwDeviceExtension,
+    _Out_ PVOID *PMdl);
+
+typedef
+PVOID
+(NTAPI *PStorPortGetSystemAddress)(
+    _In_ PSCSI_REQUEST_BLOCK Srb);
+
+typedef struct _STORPORT_EXTENDED_FUNCTIONS
+{
+    ULONG Version;
+    PStorPortGetMessageInterruptInformation GetMessageInterruptInformation;
+    PStorPortPutScatterGatherList PutScatterGatherList;
+    PStorPortBuildScatterGatherList BuildScatterGatherList;
+    PStorPortFreePool FreePool;
+    PStorPortAllocatePool AllocatePool;
+    PStorPortGetSystemAddress GetSystemAddress;
+} STORPORT_EXTENDED_FUNCTIONS, *PSTORPORT_EXTENDED_FUNCTIONS;
 
 typedef struct _HW_INITIALIZATION_DATA
 {

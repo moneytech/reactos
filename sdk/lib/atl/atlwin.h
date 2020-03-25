@@ -52,6 +52,15 @@ inline LONG_PTR GetWindowLongPtr(HWND hWnd, int nIndex)
 namespace ATL
 {
 
+#ifndef GET_X_LPARAM
+#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#endif
+#ifndef GET_Y_LPARAM
+#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
+
+
+
 struct _ATL_WNDCLASSINFOW;
 typedef _ATL_WNDCLASSINFOW CWndClassInfo;
 
@@ -1804,6 +1813,15 @@ public:                                                                         
             return TRUE;                                                                        \
     }
 
+#define COMMAND_HANDLER(id, code, func)                                                         \
+    if (uMsg == WM_COMMAND && id == LOWORD(wParam) && code == HIWORD(wParam))                   \
+    {                                                                                           \
+        bHandled = TRUE;                                                                        \
+        lResult = func(HIWORD(wParam), LOWORD(wParam), (HWND)lParam, bHandled);                 \
+        if (bHandled)                                                                           \
+            return TRUE;                                                                        \
+    }
+
 #define COMMAND_ID_HANDLER(id, func)                                                            \
     if (uMsg == WM_COMMAND && id == LOWORD(wParam))                                                \
     {                                                                                            \
@@ -1875,7 +1893,7 @@ struct _ATL_WNDCLASSINFOW
     LPCWSTR m_lpszCursorID;
     BOOL m_bSystemCursor;
     ATOM m_atom;
-    WCHAR m_szAutoName[5 + sizeof(void *)];
+    WCHAR m_szAutoName[sizeof("ATL:") + sizeof(void *) * 2]; // == 4 characters + NULL + number of hexadecimal digits describing a pointer.
 
     ATOM Register(WNDPROC *p)
     {

@@ -63,9 +63,6 @@ INT CommandAlias (LPTSTR);
 /* Prototypes for ASSOC.C */
 INT CommandAssoc (LPTSTR);
 
-/* Prototypes for ATTRIB.C */
-INT CommandAttrib (LPTSTR);
-
 /* Prototypes for BEEP.C */
 INT cmd_beep (LPTSTR);
 
@@ -214,12 +211,12 @@ INT cmd_goto (LPTSTR);
 /* Prototypes for HISTORY.C */
 #ifdef FEATURE_HISTORY
 LPCTSTR PeekHistory(INT);
-VOID History (INT, LPTSTR);/*add entries browse history*/
+VOID History(INT, LPTSTR);/*add entries browse history*/
 VOID History_move_to_bottom(VOID);/*F3*/
 VOID InitHistory(VOID);
 VOID CleanHistory(VOID);
 VOID History_del_current_entry(LPTSTR str);/*CTRL-D*/
-INT CommandHistory (LPTSTR param);
+INT CommandHistory(LPTSTR param);
 #endif
 
 /* Prototypes for IF.C */
@@ -239,9 +236,6 @@ INT  cmd_rmdir (LPTSTR);
 INT  CommandExit (LPTSTR);
 INT  CommandRem (LPTSTR);
 INT  CommandShowCommands (LPTSTR);
-
-/* Prototypes for LABEL.C */
-INT cmd_label (LPTSTR);
 
 /* Prototypes for LOCALE.C */
 extern TCHAR cDateSeparator;

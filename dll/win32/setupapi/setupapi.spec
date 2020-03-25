@@ -28,8 +28,8 @@
 @ stdcall CM_Delete_DevNode_Key(long long long)
 @ stdcall CM_Delete_DevNode_Key_Ex(long long long ptr)
 @ stdcall CM_Delete_Range(int64 int64 ptr long)
-@ stub CM_Detect_Resource_Conflict
-@ stub CM_Detect_Resource_Conflict_Ex
+@ stdcall CM_Detect_Resource_Conflict(long long ptr long ptr long)
+@ stdcall CM_Detect_Resource_Conflict_Ex(long long ptr long ptr long ptr)
 @ stdcall CM_Disable_DevNode(long long)
 @ stdcall CM_Disable_DevNode_Ex(long long ptr)
 @ stdcall CM_Disconnect_Machine(ptr)
@@ -51,7 +51,7 @@
 @ stdcall CM_Free_Res_Des(ptr ptr long)
 @ stdcall CM_Free_Res_Des_Ex(ptr ptr long ptr)
 @ stdcall CM_Free_Res_Des_Handle(ptr)
-@ stub CM_Free_Resource_Conflict_Handle
+@ stdcall CM_Free_Resource_Conflict_Handle(ptr)
 @ stdcall CM_Get_Child(ptr long long)
 @ stdcall CM_Get_Child_Ex(ptr long long ptr)
 @ stdcall CM_Get_Class_Key_NameA(ptr str ptr long)
@@ -126,9 +126,9 @@
 @ stdcall CM_Get_Res_Des_Data_Ex(ptr ptr long long ptr)
 @ stdcall CM_Get_Res_Des_Data_Size(ptr ptr long)
 @ stdcall CM_Get_Res_Des_Data_Size_Ex(ptr ptr long ptr)
-@ stub CM_Get_Resource_Conflict_Count
-@ stub CM_Get_Resource_Conflict_DetailsA
-@ stub CM_Get_Resource_Conflict_DetailsW
+@ stdcall CM_Get_Resource_Conflict_Count(ptr ptr)
+@ stdcall CM_Get_Resource_Conflict_DetailsA(ptr long ptr)
+@ stdcall CM_Get_Resource_Conflict_DetailsW(ptr long ptr)
 @ stdcall CM_Get_Sibling(ptr long long)
 @ stdcall CM_Get_Sibling_Ex(ptr long long ptr)
 @ stdcall CM_Get_Version()
@@ -165,7 +165,7 @@
 @ stdcall CM_Query_Arbitrator_Free_Size_Ex(ptr long long long ptr)
 @ stdcall CM_Query_Remove_SubTree(long long)
 @ stdcall CM_Query_Remove_SubTree_Ex(long long ptr)
-@ stub CM_Query_Resource_Conflict_List
+@ stdcall CM_Query_Resource_Conflict_List(ptr long long ptr long long ptr)
 @ stdcall CM_Reenumerate_DevNode(long long)
 @ stdcall CM_Reenumerate_DevNode_Ex(long long ptr)
 @ stdcall CM_Register_Device_Driver(long long)
@@ -223,8 +223,8 @@
 @ stub SetupAddSectionToDiskSpaceListW
 @ stdcall SetupAddToDiskSpaceListA(long str int64 long ptr long)
 @ stdcall SetupAddToDiskSpaceListW(long wstr int64 long ptr long)
-@ stub SetupAddToSourceListA
-@ stub SetupAddToSourceListW
+@ stdcall SetupAddToSourceListA(long str)
+@ stdcall SetupAddToSourceListW(long wstr)
 @ stub SetupAdjustDiskSpaceListA
 @ stub SetupAdjustDiskSpaceListW
 @ stub SetupBackupErrorA
@@ -281,7 +281,7 @@
 @ stdcall SetupDiCreateDeviceInterfaceW(ptr ptr ptr wstr long ptr)
 @ stdcall SetupDiDeleteDevRegKey(ptr ptr long long long)
 @ stdcall SetupDiDeleteDeviceInfo(long ptr)
-@ stub SetupDiDeleteDeviceInterfaceData
+@ stdcall SetupDiDeleteDeviceInterfaceData(ptr ptr)
 @ stdcall SetupDiDeleteDeviceInterfaceRegKey(ptr ptr long)
 @ stdcall SetupDiDestroyClassImageList(ptr)
 @ stdcall SetupDiDestroyDeviceInfoList(long)
@@ -369,7 +369,7 @@
 @ stdcall SetupDiRegisterDeviceInfo(ptr ptr long ptr ptr ptr)
 @ stdcall SetupDiRemoveDevice(ptr ptr)
 @ stdcall SetupDiRemoveDeviceInterface(ptr ptr)
-@ stub SetupDiRestartDevices
+@ stdcall SetupDiRestartDevices(ptr ptr)
 @ stdcall SetupDiSelectBestCompatDrv(ptr ptr)
 @ stdcall SetupDiSelectDevice(ptr ptr)
 @ stub SetupDiSelectOEMDrv
@@ -423,7 +423,7 @@
 @ stdcall SetupGetLineTextW(ptr long wstr wstr ptr long ptr)
 @ stdcall SetupGetMultiSzFieldA(ptr long ptr long ptr)
 @ stdcall SetupGetMultiSzFieldW(ptr long ptr long ptr)
-@ stub SetupGetNonInteractiveMode
+@ stdcall SetupGetNonInteractiveMode()
 @ stdcall SetupGetSourceFileLocationA(ptr ptr str ptr ptr long ptr)
 @ stdcall SetupGetSourceFileLocationW(ptr ptr wstr ptr ptr long ptr)
 @ stub SetupGetSourceFileSizeA

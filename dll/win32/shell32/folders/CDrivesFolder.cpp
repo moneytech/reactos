@@ -4,7 +4,7 @@
  *    Copyright 1997                Marcus Meissner
  *    Copyright 1998, 1999, 2002    Juergen Schmied
  *    Copyright 2009                Andrew Hill
- *    Copyright 2017                Katayama Hirofumi MZ
+ *    Copyright 2017-2019           Katayama Hirofumi MZ
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -22,6 +22,7 @@
  */
 
 #include <precomp.h>
+#include <process.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL (shell);
 
@@ -141,6 +142,119 @@ static BOOL DoEjectDrive(const WCHAR *physical, UINT nDriveType, INT *pnStringID
     return bResult;
 }
 
+// A callback function for finding the stub windows.
+static BOOL CALLBACK
+EnumStubProc(HWND hwnd, LPARAM lParam)
+{
+    CSimpleArray<HWND> *pStubs = reinterpret_cast<CSimpleArray<HWND> *>(lParam);
+
+    WCHAR szClass[64];
+    GetClassNameW(hwnd, szClass, _countof(szClass));
+
+    if (lstrcmpiW(szClass, L"StubWindow32") == 0)
+    {
+        pStubs->Add(hwnd);
+    }
+
+    return TRUE;
+}
+
+// Another callback function to find the owned window of the stub window.
+static BOOL CALLBACK
+EnumStubProc2(HWND hwnd, LPARAM lParam)
+{
+    HWND *phwnd = reinterpret_cast<HWND *>(lParam);
+
+    if (phwnd[0] == GetWindow(hwnd, GW_OWNER))
+    {
+        phwnd[1] = hwnd;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+// Parameters for format_drive_thread function below.
+struct THREAD_PARAMS
+{
+    UINT nDriveNumber;
+};
+
+static unsigned __stdcall format_drive_thread(void *args)
+{
+    THREAD_PARAMS *params = (THREAD_PARAMS *)args;
+    UINT nDriveNumber = params->nDriveNumber;
+    LONG_PTR nProp = nDriveNumber | 0x7F00;
+
+    // Search the stub windows that already exist.
+    CSimpleArray<HWND> old_stubs;
+    EnumWindows(EnumStubProc, (LPARAM)&old_stubs);
+
+    for (INT n = 0; n < old_stubs.GetSize(); ++n)
+    {
+        HWND hwndStub = old_stubs[n];
+
+        // The target stub window has the prop.
+        if (GetPropW(hwndStub, L"DriveNumber") == (HANDLE)nProp)
+        {
+            // Found.
+            HWND ahwnd[2];
+            ahwnd[0] = hwndStub;
+            ahwnd[1] = NULL;
+            EnumWindows(EnumStubProc2, (LPARAM)ahwnd);
+
+            // Activate.
+            BringWindowToTop(ahwnd[1]);
+
+            delete params;
+            return 0;
+        }
+    }
+
+    // Create a stub window.
+    DWORD style = WS_DISABLED | WS_CLIPSIBLINGS | WS_CAPTION;
+    DWORD exstyle = WS_EX_WINDOWEDGE | WS_EX_APPWINDOW;
+    CStubWindow32 stub;
+    if (!stub.Create(NULL, NULL, NULL, style, exstyle))
+    {
+        ERR("StubWindow32 creation failed\n");
+        delete params;
+        return 0;
+    }
+
+    // Add prop to the target stub window.
+    SetPropW(stub, L"DriveNumber", (HANDLE)nProp);
+
+    // Do format.
+    SHFormatDrive(stub, nDriveNumber, SHFMT_ID_DEFAULT, 0);
+
+    // Clean up.
+    RemovePropW(stub, L"DriveNumber");
+    stub.DestroyWindow();
+    delete params;
+
+    return 0;
+}
+
+static HRESULT DoFormatDrive(HWND hwnd, UINT nDriveNumber)
+{
+    THREAD_PARAMS *params = new THREAD_PARAMS;
+    params->nDriveNumber = nDriveNumber;
+
+    // Create thread to avoid locked.
+    unsigned tid;
+    HANDLE hThread = (HANDLE)_beginthreadex(NULL, 0, format_drive_thread, params, 0, &tid);
+    if (hThread == NULL)
+    {
+        delete params;
+        return E_FAIL;
+    }
+
+    CloseHandle(hThread);
+
+    return S_OK;
+}
+
 HRESULT CALLBACK DrivesContextMenuCallback(IShellFolder *psf,
                                            HWND         hwnd,
                                            IDataObject  *pdtobj,
@@ -226,14 +340,7 @@ HRESULT CALLBACK DrivesContextMenuCallback(IShellFolder *psf,
         {
             if (wParam == CMDID_FORMAT)
             {
-                /* do format */
-                DWORD dwRet = SHFormatDrive(hwnd, szDrive[0] - 'A', SHFMT_ID_DEFAULT, 0);
-                switch (dwRet)
-                {
-                case SHFMT_ERROR: case SHFMT_CANCEL: case SHFMT_NOFORMAT:
-                    hr = E_FAIL;
-                    break;
-                }
+                hr = DoFormatDrive(hwnd, szDrive[0] - 'A');
             }
             else if (wParam == CMDID_EJECT)
             {
@@ -297,6 +404,51 @@ HRESULT CDrivesContextMenu_CreateInstance(PCIDLIST_ABSOLUTE pidlFolder,
     return CDefFolderMenu_Create2(pidlFolder, hwnd, cidl, apidl, psf, DrivesContextMenuCallback, cKeys, hKeys, ppcm);
 }
 
+static HRESULT
+getIconLocationForDrive(IShellFolder *psf, PCITEMID_CHILD pidl, UINT uFlags,
+                        LPWSTR szIconFile, UINT cchMax, int *piIndex, UINT *pwFlags)
+{
+    WCHAR wszPath[MAX_PATH];
+    WCHAR wszAutoRunInfPath[MAX_PATH];
+    WCHAR wszValue[MAX_PATH], wszTemp[MAX_PATH];
+    static const WCHAR wszAutoRunInf[] = { 'a','u','t','o','r','u','n','.','i','n','f',0 };
+    static const WCHAR wszAutoRun[] = { 'a','u','t','o','r','u','n',0 };
+
+    // get path
+    if (!ILGetDisplayNameExW(psf, pidl, wszPath, 0))
+        return E_FAIL;
+    if (!PathIsDirectoryW(wszPath))
+        return E_FAIL;
+
+    // build the full path of autorun.inf
+    StringCchCopyW(wszAutoRunInfPath, _countof(wszAutoRunInfPath), wszPath);
+    PathAppendW(wszAutoRunInfPath, wszAutoRunInf);
+
+    // autorun.inf --> wszValue
+    if (GetPrivateProfileStringW(wszAutoRun, L"icon", NULL, wszValue, _countof(wszValue),
+                                 wszAutoRunInfPath) && wszValue[0] != 0)
+    {
+        // wszValue --> wszTemp
+        ExpandEnvironmentStringsW(wszValue, wszTemp, _countof(wszTemp));
+
+        // parse the icon location
+        *piIndex = PathParseIconLocationW(wszTemp);
+
+        // wszPath + wszTemp --> wszPath
+        if (PathIsRelativeW(wszTemp))
+            PathAppendW(wszPath, wszTemp);
+        else
+            StringCchCopyW(wszPath, _countof(wszPath), wszTemp);
+
+        // wszPath --> szIconFile
+        GetFullPathNameW(wszPath, cchMax, szIconFile, NULL);
+
+        return S_OK;
+    }
+
+    return E_FAIL;
+}
+
 HRESULT CDrivesExtractIcon_CreateInstance(IShellFolder * psf, LPCITEMIDLIST pidl, REFIID riid, LPVOID * ppvOut)
 {
     CComPtr<IDefaultExtractIconInit> initIcon;
@@ -311,8 +463,14 @@ HRESULT CDrivesExtractIcon_CreateInstance(IShellFolder * psf, LPCITEMIDLIST pidl
 
     WCHAR wTemp[MAX_PATH];
     int icon_idx;
+    UINT flags = 0;
     if ((DriveType == DRIVE_FIXED || DriveType == DRIVE_UNKNOWN) &&
         (HCR_GetIconW(L"Drive", wTemp, NULL, MAX_PATH, &icon_idx)))
+    {
+        initIcon->SetNormalIcon(wTemp, icon_idx);
+    }
+    else if (SUCCEEDED(getIconLocationForDrive(psf, pidl, 0, wTemp, _countof(wTemp),
+                                               &icon_idx, &flags)))
     {
         initIcon->SetNormalIcon(wTemp, icon_idx);
     }
@@ -485,6 +643,9 @@ HRESULT WINAPI CDrivesFolder::BindToObject(PCUIDLIST_RELATIVE pidl, LPBC pbcRese
     TRACE("(%p)->(pidl=%p,%p,%s,%p)\n", this,
           pidl, pbcReserved, shdebugstr_guid(&riid), ppvOut);
 
+    if (!pidl)
+        return E_INVALIDARG;
+
     if (_ILIsSpecialFolder(pidl))
         return m_regFolder->BindToObject(pidl, pbcReserved, riid, ppvOut);
 
@@ -618,8 +779,21 @@ HRESULT WINAPI CDrivesFolder::CreateViewObject(HWND hwndOwner, REFIID riid, LPVO
     }
     else if (IsEqualIID(riid, IID_IContextMenu))
     {
-        WARN("IContextMenu not implemented\n");
-        hr = E_NOTIMPL;
+        HKEY hKeys[16];
+        UINT cKeys = 0;
+        AddClassKeyToArray(L"Directory\\Background", hKeys, &cKeys);
+
+        DEFCONTEXTMENU dcm;
+        dcm.hwnd = hwndOwner;
+        dcm.pcmcb = this;
+        dcm.pidlFolder = pidlRoot;
+        dcm.psf = this;
+        dcm.cidl = 0;
+        dcm.apidl = NULL;
+        dcm.cKeys = cKeys;
+        dcm.aKeys = hKeys;
+        dcm.punkAssociationInfo = NULL;
+        hr = SHCreateDefaultContextMenu(&dcm, riid, ppvOut);
     }
     else if (IsEqualIID(riid, IID_IShellView))
     {
@@ -717,7 +891,7 @@ HRESULT WINAPI CDrivesFolder::GetUIObjectOf(HWND hwndOwner,
     else if (IsEqualIID (riid, IID_IDataObject) && (cidl >= 1))
     {
         hr = IDataObject_Constructor (hwndOwner,
-                                      pidlRoot, apidl, cidl, (IDataObject **)&pObj);
+                                      pidlRoot, apidl, cidl, TRUE, (IDataObject **)&pObj);
     }
     else if ((IsEqualIID (riid, IID_IExtractIconA) || IsEqualIID (riid, IID_IExtractIconW)) && (cidl == 1))
     {
@@ -990,7 +1164,7 @@ HRESULT WINAPI CDrivesFolder::GetClassID(CLSID *lpClassId)
  *
  * NOTES: it makes no sense to change the pidl
  */
-HRESULT WINAPI CDrivesFolder::Initialize(LPCITEMIDLIST pidl)
+HRESULT WINAPI CDrivesFolder::Initialize(PCIDLIST_ABSOLUTE pidl)
 {
     return S_OK;
 }
@@ -998,7 +1172,7 @@ HRESULT WINAPI CDrivesFolder::Initialize(LPCITEMIDLIST pidl)
 /**************************************************************************
  *    CDrivesFolder::GetCurFolder
  */
-HRESULT WINAPI CDrivesFolder::GetCurFolder(LPITEMIDLIST *pidl)
+HRESULT WINAPI CDrivesFolder::GetCurFolder(PIDLIST_ABSOLUTE *pidl)
 {
     TRACE("(%p)->(%p)\n", this, pidl);
 
@@ -1007,4 +1181,44 @@ HRESULT WINAPI CDrivesFolder::GetCurFolder(LPITEMIDLIST *pidl)
 
     *pidl = ILClone(pidlRoot);
     return S_OK;
+}
+
+/************************************************************************/
+/* IContextMenuCB interface */
+
+HRESULT WINAPI CDrivesFolder::CallBack(IShellFolder *psf, HWND hwndOwner, IDataObject *pdtobj, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    if (uMsg != DFM_MERGECONTEXTMENU && uMsg != DFM_INVOKECOMMAND)
+        return S_OK;
+
+    /* no data object means no selection */
+    if (!pdtobj)
+    {
+        if (uMsg == DFM_INVOKECOMMAND && wParam == 1)   // #1
+        {
+            // "System" properties
+            ShellExecuteW(hwndOwner,
+                          NULL,
+                          L"rundll32.exe",
+                          L"shell32.dll,Control_RunDLL sysdm.cpl",
+                          NULL,
+                          SW_SHOWNORMAL);
+        }
+        else if (uMsg == DFM_MERGECONTEXTMENU)
+        {
+            QCMINFO *pqcminfo = (QCMINFO *)lParam;
+            HMENU hpopup = CreatePopupMenu();
+            _InsertMenuItemW(hpopup, 0, TRUE, 0, MFT_SEPARATOR, NULL, MFS_ENABLED); // #0
+            _InsertMenuItemW(hpopup, 1, TRUE, 1, MFT_STRING, MAKEINTRESOURCEW(IDS_PROPERTIES), MFS_ENABLED); // #1
+            Shell_MergeMenus(pqcminfo->hmenu, hpopup, pqcminfo->indexMenu++, pqcminfo->idCmdFirst, pqcminfo->idCmdLast, MM_ADDSEPARATOR);
+            DestroyMenu(hpopup);
+        }
+
+        return S_OK;
+    }
+
+    if (uMsg != DFM_INVOKECOMMAND || wParam != DFM_CMD_PROPERTIES)
+        return S_OK;
+
+    return Shell_DefaultContextMenuCallBack(this, pdtobj);
 }
